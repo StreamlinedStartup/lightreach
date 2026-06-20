@@ -1,71 +1,54 @@
 "use client"
 
 import * as React from "react"
-import { ThemeProvider as NextThemesProvider, useTheme } from "next-themes"
 
-function ThemeProvider({
-  children,
-  ...props
-}: React.ComponentProps<typeof NextThemesProvider>) {
-  return (
-    <NextThemesProvider
-      attribute="class"
-      defaultTheme="system"
-      enableSystem
-      disableTransitionOnChange
-      {...props}
-    >
-      <ThemeHotkey />
-      {children}
-    </NextThemesProvider>
-  )
+type Theme = "light" | "dark"
+
+interface ThemeContextValue {
+  theme: Theme
+  resolvedTheme: Theme
+  setTheme: (theme: Theme) => void
 }
 
-function isTypingTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) {
-    return false
-  }
+const ThemeContext = React.createContext<ThemeContextValue | null>(null)
 
-  return (
-    target.isContentEditable ||
-    target.tagName === "INPUT" ||
-    target.tagName === "TEXTAREA" ||
-    target.tagName === "SELECT"
-  )
+export function useTheme(): ThemeContextValue {
+  return React.useContext(ThemeContext) ?? { theme: "dark", resolvedTheme: "dark", setTheme: () => {} }
 }
 
-function ThemeHotkey() {
-  const { resolvedTheme, setTheme } = useTheme()
+export function ThemeProvider({ children }: { children: React.ReactNode }) {
+  // Start with dark; sync from the server-applied DOM class on first mount
+  const [theme, setThemeState] = React.useState<Theme>("dark")
 
   React.useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.defaultPrevented || event.repeat) {
-        return
-      }
+    setThemeState(document.documentElement.classList.contains("light") ? "light" : "dark")
+  }, [])
 
-      if (event.metaKey || event.ctrlKey || event.altKey) {
-        return
-      }
+  const setTheme = React.useCallback((t: Theme) => {
+    setThemeState(t)
+    // Persist in a cookie so the server can read it on the next page load
+    document.cookie = `theme=${t}; path=/; max-age=${365 * 24 * 60 * 60}; SameSite=Lax`
+    document.documentElement.classList.remove("light", "dark")
+    document.documentElement.classList.add(t)
+  }, [])
 
-      if (event.key.toLowerCase() !== "d") {
+  React.useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.defaultPrevented || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return
+      if (!e.key || e.key.toLowerCase() !== "d") return
+      const target = e.target as HTMLElement
+      if (
+        target.isContentEditable ||
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT"
+      )
         return
-      }
-
-      if (isTypingTarget(event.target)) {
-        return
-      }
-
-      setTheme(resolvedTheme === "dark" ? "light" : "dark")
+      setTheme(theme === "dark" ? "light" : "dark")
     }
-
     window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [theme, setTheme])
 
-    return () => {
-      window.removeEventListener("keydown", onKeyDown)
-    }
-  }, [resolvedTheme, setTheme])
-
-  return null
+  return <ThemeContext.Provider value={{ theme, resolvedTheme: theme, setTheme }}>{children}</ThemeContext.Provider>
 }
-
-export { ThemeProvider }

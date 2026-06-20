@@ -7,11 +7,15 @@
     "dev": "turbo dev",
     "lint": "turbo lint",
     "format": "turbo format",
-    "typecheck": "turbo typecheck"
+    "typecheck": "turbo typecheck",
+    "db:generate": "pnpm --filter @workspace/db generate",
+    "db:migrate": "pnpm --filter @workspace/db migrate",
+    "db:studio": "pnpm --filter @workspace/db studio"
   },
   "devDependencies": {
     "@workspace/eslint-config": "workspace:*",
     "@workspace/typescript-config": "workspace:*",
+    "drizzle-kit": "^0.31.1",
     "prettier": "^3.8.3",
     "prettier-plugin-tailwindcss": "^0.8.0",
     "turbo": "^2.9.15",
