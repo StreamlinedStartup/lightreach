@@ -229,6 +229,8 @@ export const inboundEmails = sqliteTable(
     /** true when subject/body matched a configured warmup keyword */
     isWarmup: integer("is_warmup", { mode: "boolean" }).notNull().default(false),
     isRead: integer("is_read", { mode: "boolean" }).notNull().default(false),
+    /** 'none' | 'interested' | 'not_interested' | 'meeting_booked' | 'out_of_office' | 'do_not_contact' */
+    category: text("category").notNull().default("none"),
     receivedAt: integer("received_at", { mode: "timestamp" }),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()

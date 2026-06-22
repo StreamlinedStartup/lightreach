@@ -12,6 +12,7 @@ export type InboundRow = {
   bodyHtml: string | null
   isWarmup: boolean
   isRead: boolean
+  category: string
   receivedAt: string | null
   connectionId: number | null
   connectionLabel: string | null
@@ -34,6 +35,7 @@ export default async function InboxPage() {
         bodyHtml: inboundEmails.bodyHtml,
         isWarmup: inboundEmails.isWarmup,
         isRead: inboundEmails.isRead,
+        category: inboundEmails.category,
         receivedAt: inboundEmails.receivedAt,
         connectionId: inboundEmails.connectionId,
         connectionLabel: connections.label,

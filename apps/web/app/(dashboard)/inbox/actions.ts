@@ -109,6 +109,11 @@ export async function replyToEmail(
   }
 }
 
+export async function categorizeEmail(id: number, category: string) {
+  await db.update(inboundEmails).set({ category }).where(eq(inboundEmails.id, id))
+  revalidatePath('/inbox')
+}
+
 export async function triggerFetch(): Promise<{ ok: boolean; error?: string }> {
   try {
     await pollAllInboxes()

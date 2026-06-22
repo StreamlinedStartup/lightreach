@@ -11,6 +11,12 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@workspace/ui/components/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@workspace/ui/components/dropdown-menu'
 import { Input } from '@workspace/ui/components/input'
 import { Label } from '@workspace/ui/components/label'
 import {
@@ -39,10 +45,66 @@ import {
   IconSend,
   IconMail,
   IconMailOpened,
+  IconTag,
+  IconChevronDown,
+  IconCircleCheck,
+  IconCircleX,
+  IconCalendar,
+  IconClock,
+  IconBan,
 } from '@tabler/icons-react'
 import { toast } from 'sonner'
 import type { InboundRow } from './page'
-import { markRead, markUnread, replyToEmail, saveWarmupKeywords, triggerFetch } from './actions'
+import { markRead, markUnread, replyToEmail, saveWarmupKeywords, triggerFetch, categorizeEmail } from './actions'
+
+// ---------------------------------------------------------------------------
+// Category config
+// ---------------------------------------------------------------------------
+
+type CategoryKey = 'none' | 'interested' | 'not_interested' | 'meeting_booked' | 'out_of_office' | 'do_not_contact'
+
+const CATEGORIES: { value: CategoryKey; label: string; badge: string; icon: React.ReactNode }[] = [
+  {
+    value: 'none',
+    label: 'Uncategorized',
+    badge: '',
+    icon: <IconTag className="size-3.5" />,
+  },
+  {
+    value: 'interested',
+    label: 'Interested',
+    badge: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20',
+    icon: <IconCircleCheck className="size-3.5" />,
+  },
+  {
+    value: 'not_interested',
+    label: 'Not Interested',
+    badge: 'bg-red-500/15 text-red-400 border-red-500/20',
+    icon: <IconCircleX className="size-3.5" />,
+  },
+  {
+    value: 'meeting_booked',
+    label: 'Meeting Booked',
+    badge: 'bg-blue-500/15 text-blue-400 border-blue-500/20',
+    icon: <IconCalendar className="size-3.5" />,
+  },
+  {
+    value: 'out_of_office',
+    label: 'Out of Office',
+    badge: 'bg-orange-500/15 text-orange-400 border-orange-500/20',
+    icon: <IconClock className="size-3.5" />,
+  },
+  {
+    value: 'do_not_contact',
+    label: 'Do Not Contact',
+    badge: 'bg-muted text-muted-foreground border-border',
+    icon: <IconBan className="size-3.5" />,
+  },
+]
+
+function getCategoryMeta(value: string) {
+  return CATEGORIES.find((c) => c.value === value) ?? CATEGORIES[0]!
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -75,6 +137,51 @@ function filterRows(rows: InboundRow[], query: string): InboundRow[] {
 }
 
 // ---------------------------------------------------------------------------
+// Category picker
+// ---------------------------------------------------------------------------
+
+function CategoryPicker({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (cat: CategoryKey) => void
+}) {
+  const meta = getCategoryMeta(value)
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+        <button
+          className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs font-medium transition-opacity hover:opacity-80 ${
+            meta.badge || 'border-border text-muted-foreground'
+          }`}
+        >
+          {meta.icon}
+          {meta.value === 'none' ? <span className="text-muted-foreground">Categorize</span> : meta.label}
+          <IconChevronDown className="size-2.5 opacity-60" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" onClick={(e) => e.stopPropagation()}>
+        {CATEGORIES.map((cat) => (
+          <DropdownMenuItem
+            key={cat.value}
+            className="gap-2 text-sm"
+            onSelect={() => onChange(cat.value)}
+          >
+            <span className={`flex items-center gap-1.5 ${cat.badge ? cat.badge.replace('bg-', 'text-').split(' ')[0] : 'text-muted-foreground'}`}>
+              {cat.icon}
+            </span>
+            {cat.label}
+            {cat.value === value && <span className="ml-auto text-xs opacity-50">✓</span>}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Empty state
 // ---------------------------------------------------------------------------
 
@@ -88,6 +195,8 @@ function EmptyState({ label }: { label: string }) {
       <p className="text-muted-foreground mt-1 text-sm">
         {label === 'warmup'
           ? 'Emails matching your warmup keywords will appear here.'
+          : label === 'interested'
+          ? 'Mark emails as Interested to track them here.'
           : 'Received emails will appear here after the next sync.'}
       </p>
     </div>
@@ -102,10 +211,12 @@ function EmailSheet({
   email,
   onClose,
   onReplied,
+  onCategoryChange,
 }: {
   email: InboundRow
   onClose: () => void
   onReplied: () => void
+  onCategoryChange: (id: number, cat: CategoryKey) => void
 }) {
   const [replyBody, setReplyBody] = useState('')
   const [sending, startSending] = useTransition()
@@ -148,6 +259,26 @@ function EmailSheet({
             )}
             <span>·</span>
             <span>{formatDate(email.receivedAt)}</span>
+          </div>
+          {/* Category row */}
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {CATEGORIES.filter((c) => c.value !== 'none').map((cat) => {
+              const active = email.category === cat.value
+              return (
+                <button
+                  key={cat.value}
+                  onClick={() => onCategoryChange(email.id, cat.value)}
+                  className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs font-medium transition-all ${
+                    active
+                      ? cat.badge
+                      : 'border-border text-muted-foreground hover:border-muted-foreground/40'
+                  }`}
+                >
+                  {cat.icon}
+                  {cat.label}
+                </button>
+              )
+            })}
           </div>
         </SheetHeader>
 
@@ -259,10 +390,12 @@ function InboxTable({
   rows,
   emptyLabel,
   onRowClick,
+  onCategoryChange,
 }: {
   rows: InboundRow[]
   emptyLabel: string
   onRowClick: (row: InboundRow) => void
+  onCategoryChange: (id: number, cat: CategoryKey) => void
 }) {
   if (rows.length === 0) return <EmptyState label={emptyLabel} />
 
@@ -275,6 +408,7 @@ function InboxTable({
               <TableHead className="w-6" />
               <TableHead>From</TableHead>
               <TableHead>Subject</TableHead>
+              <TableHead>Category</TableHead>
               <TableHead>Mailbox</TableHead>
               <TableHead>Received</TableHead>
             </TableRow>
@@ -303,6 +437,12 @@ function InboxTable({
                 </TableCell>
                 <TableCell className="max-w-72 truncate text-sm">
                   {row.subject || <span className="text-muted-foreground/40">(no subject)</span>}
+                </TableCell>
+                <TableCell>
+                  <CategoryPicker
+                    value={row.category}
+                    onChange={(cat) => onCategoryChange(row.id, cat)}
+                  />
                 </TableCell>
                 <TableCell>
                   {row.connectionLabel ? (
@@ -346,6 +486,10 @@ export function InboxView({
     () => filterRows(localEmails.filter((e) => !e.isWarmup), search),
     [localEmails, search],
   )
+  const interested = useMemo(
+    () => filterRows(localEmails.filter((e) => !e.isWarmup && e.category === 'interested'), search),
+    [localEmails, search],
+  )
   const warmup = useMemo(
     () => filterRows(localEmails.filter((e) => e.isWarmup), search),
     [localEmails, search],
@@ -356,12 +500,23 @@ export function InboxView({
   function handleRowClick(row: InboundRow) {
     setSelectedEmail(row)
     if (!row.isRead) {
-      // Optimistic update
       setLocalEmails((prev) =>
         prev.map((e) => (e.id === row.id ? { ...e, isRead: true } : e)),
       )
       markRead(row.id).catch(() => {})
     }
+  }
+
+  function handleCategoryChange(id: number, cat: CategoryKey) {
+    setLocalEmails((prev) =>
+      prev.map((e) => (e.id === id ? { ...e, category: cat } : e)),
+    )
+    if (selectedEmail?.id === id) {
+      setSelectedEmail((prev) => prev ? { ...prev, category: cat } : prev)
+    }
+    categorizeEmail(id, cat).catch(() => {
+      toast.error('Failed to save category')
+    })
   }
 
   function handleRefresh() {
@@ -431,6 +586,15 @@ export function InboxView({
               </span>
             )}
           </TabsTrigger>
+          <TabsTrigger value="interested" className="gap-1.5">
+            <IconCircleCheck className="size-3.5" />
+            Interested
+            {interested.length > 0 && (
+              <span className="bg-emerald-500/15 text-emerald-400 rounded px-1.5 py-0.5 text-xs font-medium">
+                {interested.length}
+              </span>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="warmup" className="gap-1.5">
             <IconFlame className="size-3.5" />
             Warmup
@@ -443,11 +607,30 @@ export function InboxView({
         </TabsList>
 
         <TabsContent value="inbox" className="mt-4">
-          <InboxTable rows={inbox} emptyLabel="inbox" onRowClick={handleRowClick} />
+          <InboxTable
+            rows={inbox}
+            emptyLabel="inbox"
+            onRowClick={handleRowClick}
+            onCategoryChange={handleCategoryChange}
+          />
+        </TabsContent>
+
+        <TabsContent value="interested" className="mt-4">
+          <InboxTable
+            rows={interested}
+            emptyLabel="interested"
+            onRowClick={handleRowClick}
+            onCategoryChange={handleCategoryChange}
+          />
         </TabsContent>
 
         <TabsContent value="warmup" className="mt-4">
-          <InboxTable rows={warmup} emptyLabel="warmup" onRowClick={handleRowClick} />
+          <InboxTable
+            rows={warmup}
+            emptyLabel="warmup"
+            onRowClick={handleRowClick}
+            onCategoryChange={handleCategoryChange}
+          />
         </TabsContent>
       </Tabs>
 
@@ -456,6 +639,7 @@ export function InboxView({
           email={selectedEmail}
           onClose={() => setSelectedEmail(null)}
           onReplied={() => setSelectedEmail(null)}
+          onCategoryChange={handleCategoryChange}
         />
       )}
 
