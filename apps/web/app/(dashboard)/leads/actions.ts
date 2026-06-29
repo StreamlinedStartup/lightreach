@@ -1,6 +1,6 @@
 'use server'
 import { db, lists, leads } from '@workspace/db'
-import { eq } from 'drizzle-orm'
+import { eq, and, not } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { MappedLead } from '@workspace/core/csv'
 
@@ -76,4 +76,38 @@ export async function createLead(data: {
     openingLine: data.openingLine?.trim() ?? '',
   })
   revalidatePath('/leads')
+}
+
+export async function updateLead(
+  id: number,
+  data: {
+    email?: string
+    firstName?: string
+    lastName?: string
+    company?: string
+    openingLine?: string
+    status?: string
+  },
+): Promise<void> {
+  const patch: Record<string, unknown> = {}
+
+  if (data.email !== undefined) {
+    const normalized = data.email.toLowerCase().trim()
+    const existing = await db
+      .select({ id: leads.id })
+      .from(leads)
+      .where(and(eq(leads.email, normalized), not(eq(leads.id, id))))
+    if (existing.length > 0) throw new Error('A lead with this email already exists')
+    patch.email = normalized
+  }
+  if (data.firstName !== undefined) patch.firstName = data.firstName.trim()
+  if (data.lastName !== undefined) patch.lastName = data.lastName.trim()
+  if (data.company !== undefined) patch.company = data.company.trim()
+  if (data.openingLine !== undefined) patch.openingLine = data.openingLine.trim()
+  if (data.status !== undefined) patch.status = data.status
+
+  if (Object.keys(patch).length > 0) {
+    await db.update(leads).set(patch).where(eq(leads.id, id))
+    revalidatePath('/leads')
+  }
 }

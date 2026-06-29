@@ -25,6 +25,7 @@ import {
   IconBolt,
   IconInbox,
   IconMailbox,
+  IconPlug,
 } from "@tabler/icons-react"
 
 const overviewItems = [
@@ -41,6 +42,10 @@ const outreachItems = [
   { label: "Campaigns", href: "/campaigns", icon: IconSend },
   { label: "Emails", href: "/emails", icon: IconInbox },
   { label: "Inbox", href: "/inbox", icon: IconMailbox },
+]
+
+const integrationsItems = [
+  { label: "MCP", href: "/mcp", icon: IconPlug },
 ]
 
 export function AppSidebar() {
@@ -111,6 +116,26 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {outreachItems.map((item) => (
+                <SidebarMenuItem key={item.href}>
+                  <SidebarMenuButton asChild isActive={isActive(item.href)}>
+                    <Link href={item.href}>
+                      <item.icon className="size-4" />
+                      {item.label}
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+        <SidebarSeparator />
+
+        {/* Integrations */}
+        <SidebarGroup>
+          <SidebarGroupLabel>Integrations</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {integrationsItems.map((item) => (
                 <SidebarMenuItem key={item.href}>
                   <SidebarMenuButton asChild isActive={isActive(item.href)}>
                     <Link href={item.href}>

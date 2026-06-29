@@ -3,7 +3,7 @@ import { db, connections } from '@workspace/db'
 import { eq } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { encrypt, decrypt } from '@workspace/core/crypto'
-import { verifyConnection } from '@workspace/core/email/transport'
+import { verifyConnection, sendMail } from '@workspace/core/email/transport'
 
 type ConnectionInput = {
   label: string
@@ -129,6 +129,46 @@ export async function testConnection(id: number): Promise<{ ok: boolean; error?:
 
   revalidatePath('/connections')
   return result.ok ? { ok: true } : { ok: false, error: result.error }
+}
+
+export async function sendTestEmail(
+  connectionId: number,
+  to: string,
+  subject?: string,
+  body?: string,
+): Promise<{ ok: boolean; error?: string; messageId?: string }> {
+  const [row] = await db.select().from(connections).where(eq(connections.id, connectionId))
+  if (!row) return { ok: false, error: 'Connection not found' }
+
+  let smtpPass: string
+  try {
+    smtpPass = decrypt(row.smtpPassEncrypted)
+  } catch {
+    return { ok: false, error: 'Failed to decrypt mailbox credentials' }
+  }
+
+  try {
+    const result = await sendMail(
+      {
+        smtpHost: row.smtpHost,
+        smtpPort: row.smtpPort,
+        smtpSecure: row.smtpSecure,
+        smtpUser: row.smtpUser,
+        smtpPass,
+      },
+      {
+        fromName: row.fromName,
+        fromEmail: row.fromEmail,
+        to,
+        subject: subject ?? 'Test email from Lightreach',
+        html: (body ?? 'This is a test email sent via Lightreach.').replace(/\n/g, '<br>'),
+        text: body ?? 'This is a test email sent via Lightreach.',
+      },
+    )
+    return { ok: true, messageId: result.messageId }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 export async function testConnectionDraft(data: {
