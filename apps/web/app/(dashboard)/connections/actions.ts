@@ -4,6 +4,28 @@ import { eq } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { encrypt, decrypt } from '@workspace/core/crypto'
 import { verifyConnection, sendMail } from '@workspace/core/email/transport'
+import { checkDomainAuth, domainFromEmail } from '@workspace/core/email/dns'
+
+type DnsRecords = {
+  spf: boolean
+  dkim: boolean
+  dmarc: boolean
+  valid: boolean
+  checkedAt: string
+}
+
+/** Run the SPF/DKIM/DMARC check for a mailbox's from-email domain. Never throws. */
+async function runDnsCheck(fromEmail: string): Promise<DnsRecords> {
+  const domain = domainFromEmail(fromEmail)
+  if (!domain) {
+    return { spf: false, dkim: false, dmarc: false, valid: false, checkedAt: new Date().toISOString() }
+  }
+  try {
+    return await checkDomainAuth(domain)
+  } catch {
+    return { spf: false, dkim: false, dmarc: false, valid: false, checkedAt: new Date().toISOString() }
+  }
+}
 
 type ConnectionInput = {
   label: string
@@ -48,6 +70,7 @@ function resolvedImapFields(data: ConnectionInput) {
 export async function createConnection(data: ConnectionInput) {
   const { smtpPass, imapPass, ...rest } = data
   const imap = resolvedImapFields(data)
+  const dnsRecords = await runDnsCheck(rest.fromEmail)
   await db.insert(connections).values({
     label: rest.label,
     fromName: rest.fromName,
@@ -58,6 +81,7 @@ export async function createConnection(data: ConnectionInput) {
     smtpUser: rest.smtpUser,
     dailyLimit: rest.dailyLimit,
     smtpPassEncrypted: encrypt(smtpPass),
+    dnsRecords,
     ...imap,
     imapPassEncrypted:
       data.imapEnabled && !data.imapSameAsSmtp && imapPass ? encrypt(imapPass) : null,
@@ -107,23 +131,26 @@ export async function testConnection(id: number): Promise<{ ok: boolean; error?:
   if (!row) return { ok: false, error: 'Connection not found' }
 
   const smtpPass = decrypt(row.smtpPassEncrypted)
-  const result = await verifyConnection({
-    smtpHost: row.smtpHost,
-    smtpPort: row.smtpPort,
-    smtpSecure: row.smtpSecure,
-    smtpUser: row.smtpUser,
-    smtpPass,
-  })
+  const [result, dnsRecords] = await Promise.all([
+    verifyConnection({
+      smtpHost: row.smtpHost,
+      smtpPort: row.smtpPort,
+      smtpSecure: row.smtpSecure,
+      smtpUser: row.smtpUser,
+      smtpPass,
+    }),
+    runDnsCheck(row.fromEmail),
+  ])
 
   if (result.ok) {
     await db
       .update(connections)
-      .set({ lastTestedAt: new Date(), lastError: null, status: 'active' })
+      .set({ lastTestedAt: new Date(), lastError: null, status: 'active', dnsRecords })
       .where(eq(connections.id, id))
   } else {
     await db
       .update(connections)
-      .set({ lastTestedAt: new Date(), lastError: result.error, status: 'error' })
+      .set({ lastTestedAt: new Date(), lastError: result.error, status: 'error', dnsRecords })
       .where(eq(connections.id, id))
   }
 

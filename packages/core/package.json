@@ -13,7 +13,8 @@
     "./csv": "./src/csv.ts",
     "./rotation": "./src/rotation.ts",
     "./email/transport": "./src/email/transport.ts",
-    "./email/imap": "./src/email/imap.ts"
+    "./email/imap": "./src/email/imap.ts",
+    "./email/dns": "./src/email/dns.ts"
   },
   "dependencies": {
     "imapflow": "^1.4.2",

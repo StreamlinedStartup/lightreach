@@ -36,6 +36,12 @@ import {
   DropdownMenuTrigger,
 } from '@workspace/ui/components/dropdown-menu'
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@workspace/ui/components/tooltip'
+import {
   IconMailPlus,
   IconPlugConnected,
   IconDots,
@@ -45,6 +51,8 @@ import {
   IconPlayerPause,
   IconPlayerPlay,
   IconTrash,
+  IconCheck,
+  IconX,
 } from '@tabler/icons-react'
 import {
   createConnection,
@@ -54,6 +62,14 @@ import {
   testConnection,
   testConnectionDraft,
 } from './actions'
+
+export type DnsRecords = {
+  spf: boolean
+  dkim: boolean
+  dmarc: boolean
+  valid: boolean
+  checkedAt: string
+} | null
 
 export type SafeConnection = {
   id: number
@@ -68,6 +84,7 @@ export type SafeConnection = {
   status: string
   lastTestedAt: string | null
   lastError: string | null
+  dnsRecords: DnsRecords
   createdAt: string
   imapEnabled: boolean
   imapSameAsSmtp: boolean
@@ -135,6 +152,42 @@ function statusBadge(status: string) {
       </Badge>
     )
   return <Badge variant="secondary">{status}</Badge>
+}
+
+function dnsRecordRow(label: string, ok: boolean) {
+  return (
+    <div key={label} className="flex items-center justify-between gap-4 text-xs">
+      <span>{label}</span>
+      {ok ? (
+        <IconCheck className="size-3.5 text-emerald-400" />
+      ) : (
+        <IconX className="size-3.5 text-red-400" />
+      )}
+    </div>
+  )
+}
+
+function dnsBadge(dns: DnsRecords) {
+  if (!dns) return <Badge variant="secondary">Not checked</Badge>
+
+  const badge = dns.valid ? (
+    <Badge className="bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/15">Valid</Badge>
+  ) : (
+    <Badge className="bg-red-500/15 text-red-400 hover:bg-red-500/15">Missing</Badge>
+  )
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex cursor-default">{badge}</span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="flex flex-col gap-1 px-3 py-2">
+        {dnsRecordRow('SPF', dns.spf)}
+        {dnsRecordRow('DKIM', dns.dkim)}
+        {dnsRecordRow('DMARC', dns.dmarc)}
+      </TooltipContent>
+    </Tooltip>
+  )
 }
 
 function formatLastTested(dateStr: string | null): string {
@@ -583,38 +636,38 @@ export function ConnectionsView({ connections }: { connections: SafeConnection[]
       ) : (
         <Card>
           <CardContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Label</TableHead>
-                  <TableHead>Email address</TableHead>
-                  <TableHead>SMTP host</TableHead>
-                  <TableHead>Daily limit</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Last tested</TableHead>
-                  <TableHead className="w-10" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {connections.map((conn) => (
-                  <TableRow key={conn.id}>
-                    <TableCell className="font-medium">{conn.label}</TableCell>
-                    <TableCell className="text-muted-foreground">{conn.fromEmail}</TableCell>
-                    <TableCell className="text-muted-foreground font-mono text-xs">
-                      {conn.smtpHost}:{conn.smtpPort}
-                    </TableCell>
-                    <TableCell>{conn.dailyLimit}</TableCell>
-                    <TableCell>{statusBadge(conn.status)}</TableCell>
-                    <TableCell className="text-muted-foreground text-xs">
-                      {formatLastTested(conn.lastTestedAt)}
-                    </TableCell>
-                    <TableCell>
-                      <RowActions connection={conn} />
-                    </TableCell>
+            <TooltipProvider>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Label</TableHead>
+                    <TableHead>Email address</TableHead>
+                    <TableHead>DNS Records</TableHead>
+                    <TableHead>Daily limit</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Last tested</TableHead>
+                    <TableHead className="w-10" />
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {connections.map((conn) => (
+                    <TableRow key={conn.id}>
+                      <TableCell className="font-medium">{conn.label}</TableCell>
+                      <TableCell className="text-muted-foreground">{conn.fromEmail}</TableCell>
+                      <TableCell>{dnsBadge(conn.dnsRecords)}</TableCell>
+                      <TableCell>{conn.dailyLimit}</TableCell>
+                      <TableCell>{statusBadge(conn.status)}</TableCell>
+                      <TableCell className="text-muted-foreground text-xs">
+                        {formatLastTested(conn.lastTestedAt)}
+                      </TableCell>
+                      <TableCell>
+                        <RowActions connection={conn} />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TooltipProvider>
           </CardContent>
         </Card>
       )}

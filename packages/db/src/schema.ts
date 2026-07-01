@@ -25,6 +25,14 @@ export const connections = sqliteTable("connections", {
   status: text("status").notNull().default("active"),
   lastTestedAt: integer("last_tested_at", { mode: "timestamp" }),
   lastError: text("last_error"),
+  /** SPF/DKIM/DMARC DNS check results for the fromEmail domain. Null = not checked yet. */
+  dnsRecords: text("dns_records", { mode: "json" }).$type<{
+    spf: boolean;
+    dkim: boolean;
+    dmarc: boolean;
+    valid: boolean;
+    checkedAt: string;
+  }>(),
   imapEnabled: integer("imap_enabled", { mode: "boolean" }).notNull().default(false),
   imapSameAsSmtp: integer("imap_same_as_smtp", { mode: "boolean" }).notNull().default(true),
   imapHost: text("imap_host"),
