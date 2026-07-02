@@ -1,10 +1,15 @@
 'use server'
 import { db, inboundEmails, appSettings, connections, messages, leads, lists } from '@workspace/db'
-import { eq, and, inArray, sql } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { decrypt } from '@workspace/core/crypto'
-import { sendMail } from '@workspace/core/email/transport'
-import { pollAllInboxes, normalizeMessageId } from '@/lib/inbox-poller'
+import { sendMail, buildMessageId } from '@workspace/core/email/transport'
+import {
+  pollAllInboxes,
+  normalizeMessageId,
+  matchLeadByReferences,
+  matchLeadByEmail,
+} from '@/lib/inbox-poller'
 import { randomUUID } from 'crypto'
 
 export async function markRead(id: number) {
@@ -65,53 +70,10 @@ export async function saveFilteredKeywords(keywords: string) {
 async function resolveThreadLead(
   inbound: { inReplyTo: string | null; references: string | null; fromEmail: string },
 ): Promise<{ leadId: number; campaignId: number | null } | null> {
-  // Collect all referenced message-ids from threading headers
-  const refs = new Set<string>()
-  if (inbound.inReplyTo) {
-    const n = normalizeMessageId(inbound.inReplyTo)
-    if (n) refs.add(n)
-  }
-  if (inbound.references) {
-    for (const r of inbound.references.split(/\s+/)) {
-      const n = normalizeMessageId(r)
-      if (n) refs.add(n)
-    }
-  }
+  const byReferences = await matchLeadByReferences(inbound.inReplyTo, inbound.references)
+  if (byReferences) return byReferences
 
-  if (refs.size > 0) {
-    const refArray = [...refs]
-    const matched = await db
-      .select({ leadId: messages.leadId, campaignId: messages.campaignId })
-      .from(messages)
-      .where(inArray(messages.messageId, refArray))
-      .limit(1)
-
-    if (matched.length > 0) {
-      return { leadId: matched[0]!.leadId, campaignId: matched[0]!.campaignId }
-    }
-  }
-
-  // Fallback: case-insensitive email match on leads table
-  const lowerEmail = inbound.fromEmail.toLowerCase()
-  const matchingLeads = await db
-    .select({ id: leads.id })
-    .from(leads)
-    .where(eq(sql`lower(${leads.email})`, lowerEmail))
-
-  if (matchingLeads.length === 0) return null
-
-  const leadIds = matchingLeads.map((l) => l.id)
-
-  // Find the most recent sent message for any of these leads to get the campaignId
-  const sentMsg = await db
-    .select({ leadId: messages.leadId, campaignId: messages.campaignId })
-    .from(messages)
-    .where(and(eq(messages.status, 'sent'), inArray(messages.leadId, leadIds)))
-    .limit(1)
-
-  if (sentMsg.length === 0) return null
-
-  return { leadId: sentMsg[0]!.leadId, campaignId: sentMsg[0]!.campaignId }
+  return matchLeadByEmail(inbound.fromEmail)
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +156,7 @@ export async function replyToEmail(
     .trim() || undefined
 
   // Pre-generate so the messageId is always known and can be stored
-  const outboundMessageId = `<${randomUUID()}@lightreach.local>`
+  const outboundMessageId = buildMessageId(conn.fromEmail, randomUUID())
 
   try {
     await sendMail(

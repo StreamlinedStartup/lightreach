@@ -12,7 +12,7 @@ export function registerMessagesTools(server: McpServer) {
       campaignId: z.number().int().optional().describe('Filter by campaign ID'),
       leadId: z.number().int().optional().describe('Filter by lead ID'),
       status: z
-        .enum(['queued', 'scheduled', 'sent', 'failed', 'skipped'])
+        .enum(['queued', 'sending', 'sent', 'failed', 'skipped'])
         .optional()
         .describe('Filter by delivery status'),
       limit: z

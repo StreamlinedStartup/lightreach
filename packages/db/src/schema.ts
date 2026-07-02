@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  index,
   integer,
   sqliteTable,
   text,
@@ -23,6 +24,13 @@ export const connections = sqliteTable("connections", {
   dailyLimit: integer("daily_limit").notNull().default(50),
   /** 'active' | 'paused' | 'error' */
   status: text("status").notNull().default("active"),
+  /** Consecutive send failures since the last success. Reset to 0 on success;
+   *  the connection is auto-flipped to 'error' once this crosses a threshold
+   *  so a single transient error doesn't disable the mailbox. */
+  consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+  /** IMAP UIDVALIDITY of the last successful poll — if this changes, all UIDs
+   *  for this mailbox must be treated as renumbered. */
+  imapUidValidity: integer("imap_uid_validity"),
   lastTestedAt: integer("last_tested_at", { mode: "timestamp" }),
   lastError: text("last_error"),
   /** SPF/DKIM/DMARC DNS check results for the fromEmail domain. Null = not checked yet. */
@@ -182,32 +190,44 @@ export const campaignConnections = sqliteTable(
 // ---------------------------------------------------------------------------
 // messages — per-lead send queue + delivery log
 // ---------------------------------------------------------------------------
-export const messages = sqliteTable("messages", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  campaignId: integer("campaign_id")
-    .references(() => campaigns.id, { onDelete: "cascade" }),
-  leadId: integer("lead_id")
-    .notNull()
-    .references(() => leads.id, { onDelete: "cascade" }),
-  connectionId: integer("connection_id").references(() => connections.id, {
-    onDelete: "set null",
-  }),
-  /** Step position within the sequence that this message corresponds to */
-  stepPosition: integer("step_position").notNull().default(1),
-  /** 'queued' | 'scheduled' | 'sent' | 'failed' | 'skipped' */
-  status: text("status").notNull().default("queued"),
-  scheduledAt: integer("scheduled_at", { mode: "timestamp" }),
-  sentAt: integer("sent_at", { mode: "timestamp" }),
-  /** RFC822 Message-ID of the sent email — used to match inbound replies/bounces */
-  messageId: text("message_id"),
-  /** Spintax already resolved + variables substituted */
-  renderedSubject: text("rendered_subject"),
-  renderedBody: text("rendered_body"),
-  error: text("error"),
-  createdAt: integer("created_at", { mode: "timestamp" })
-    .notNull()
-    .default(sql`(unixepoch())`),
-});
+export const messages = sqliteTable(
+  "messages",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    campaignId: integer("campaign_id")
+      .references(() => campaigns.id, { onDelete: "cascade" }),
+    leadId: integer("lead_id")
+      .notNull()
+      .references(() => leads.id, { onDelete: "cascade" }),
+    connectionId: integer("connection_id").references(() => connections.id, {
+      onDelete: "set null",
+    }),
+    /** Step position within the sequence that this message corresponds to */
+    stepPosition: integer("step_position").notNull().default(1),
+    /** 'queued' | 'sending' | 'sent' | 'failed' | 'skipped' */
+    status: text("status").notNull().default("queued"),
+    scheduledAt: integer("scheduled_at", { mode: "timestamp" }),
+    sentAt: integer("sent_at", { mode: "timestamp" }),
+    /** RFC822 Message-ID of the sent email — used to match inbound replies/bounces */
+    messageId: text("message_id"),
+    /** Spintax already resolved + variables substituted */
+    renderedSubject: text("rendered_subject"),
+    renderedBody: text("rendered_body"),
+    error: text("error"),
+    /** Number of send attempts so far. Transient failures re-queue and
+     *  increment this until it hits the retry ceiling, then the message
+     *  becomes terminally 'failed'. */
+    attempts: integer("attempts").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (table) => [
+    index("messages_status_scheduled_idx").on(table.status, table.scheduledAt),
+    index("messages_status_sent_idx").on(table.status, table.sentAt),
+    index("messages_lead_status_idx").on(table.leadId, table.status),
+  ],
+);
 
 // ---------------------------------------------------------------------------
 // inbound_emails — received mail fetched via IMAP across all mailboxes
@@ -235,6 +255,8 @@ export const inboundEmails = sqliteTable(
     bodyHtml: text("body_html"),
     /** true when subject/body matched a configured filter keyword */
     isFiltered: integer("is_filtered", { mode: "boolean" }).notNull().default(false),
+    /** true when this message looks like a DSN/bounce notification (mailer-daemon, NDR subject, etc.) */
+    isBounce: integer("is_bounce", { mode: "boolean" }).notNull().default(false),
     isRead: integer("is_read", { mode: "boolean" }).notNull().default(false),
     /** set when the user sends a reply to this inbound email */
     repliedAt: integer("replied_at", { mode: "timestamp" }),

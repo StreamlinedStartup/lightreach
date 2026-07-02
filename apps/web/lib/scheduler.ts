@@ -8,31 +8,55 @@ import {
   sequenceSteps,
 } from '@workspace/db/schema'
 import { decrypt } from '@workspace/core/crypto'
-import { sendMail } from '@workspace/core/email/transport'
-import { pickNext, isWithinSendWindow } from '@workspace/core/rotation'
+import { sendMail, buildMessageId, appendUnsubscribeFooter } from '@workspace/core/email/transport'
+import { pickNext, isWithinSendWindow, randomDelayMs, startOfDayInTimezone } from '@workspace/core/rotation'
 import { expandSpintax } from '@workspace/core/spintax'
 import { renderVariables } from '@workspace/core/variables'
-import { eq, and, lte, gte, isNotNull, sql } from 'drizzle-orm'
+import { eq, and, lte, gte, isNotNull, asc, sql } from 'drizzle-orm'
 import { randomUUID } from 'crypto'
 
 const TICK_MS = 60_000
 const BATCH_SIZE = 10
+/** Terminal after this many attempts — earlier attempts re-queue with backoff. */
+const MAX_ATTEMPTS = 3
+/** A mailbox is only auto-disabled after this many consecutive (non-bounce) failures. */
+const CONNECTION_ERROR_THRESHOLD = 3
+const RETRY_BACKOFF_BASE_MS = 5 * 60_000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 function normalizeMessageId(id: string | null | undefined): string | null {
   if (!id) return null
   return id.replace(/^<|>$/g, '').trim() || null
 }
 
+/**
+ * A hard bounce means the recipient address itself is invalid and future
+ * sends to it should stop. 552 (mailbox full/quota) is a transient condition
+ * on an otherwise-valid address, not a permanent failure, so it's excluded.
+ */
 function isHardBounce(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err)
   const code = (err as { responseCode?: number }).responseCode
-  if (code !== undefined && code >= 550 && code <= 554) return true
-  if (/\b55[0-4]\b/.test(msg)) return true
-  if (/\b(user.*unknown|mailbox.*unavailable|no.*such.*user|address.*rejected|does not exist|invalid.*mailbox)\b/i.test(msg)) return true
-  return false
+  if (code !== undefined) {
+    if (code === 552) return false
+    return code >= 550 && code <= 554
+  }
+  const msg = err instanceof Error ? err.message : String(err)
+  if (/\b552\b/.test(msg)) return false
+  if (/\b55[0134]\b/.test(msg)) return true
+  return /\b(user.*unknown|mailbox.*unavailable|no.*such.*user|address.*rejected|does not exist|invalid.*mailbox)\b/i.test(
+    msg,
+  )
 }
 
 let schedulerHandle: ReturnType<typeof setInterval> | null = null
+let ticking = false
+let recovered = false
+/** Round-robin cursor per campaign, persisted across ticks so low-id mailboxes
+ *  aren't systematically favored every time the tick loop restarts. */
+const lastUsedConnectionByCampaign = new Map<number, number>()
 
 export function startScheduler(): void {
   if (schedulerHandle) {
@@ -68,6 +92,7 @@ type ConnRow = {
   id: number
   status: string
   dailyLimit: number
+  consecutiveFailures: number
   smtpHost: string
   smtpPort: number
   smtpSecure: boolean
@@ -77,19 +102,42 @@ type ConnRow = {
   fromEmail: string
 }
 
+/** Serial wrapper: setInterval has no built-in reentrancy guard, and a batch of
+ *  slow SMTP sends (plus jitter delays) can easily outlast one 60s interval. */
 async function tick(): Promise<void> {
+  if (ticking) return
+  ticking = true
+  try {
+    if (!recovered) {
+      // Rows left in 'sending' from a process crash mid-send must go back to
+      // 'queued' or they'd be stuck forever (never re-selected, never resent).
+      await db
+        .update(messages)
+        .set({ status: 'queued' })
+        .where(eq(messages.status, 'sending'))
+      recovered = true
+    }
+    await runTick()
+  } finally {
+    ticking = false
+  }
+}
+
+async function runTick(): Promise<void> {
   const now = new Date()
 
   const todayStart = new Date(now)
   todayStart.setHours(0, 0, 0, 0)
 
-  // Find due queued messages for running campaigns
+  // Find due queued messages for running campaigns, oldest-due first so a
+  // backlog doesn't starve messages that have been waiting the longest.
   const due = await db
     .select({
       msgId: messages.id,
       campaignId: messages.campaignId,
       leadId: messages.leadId,
       stepPosition: messages.stepPosition,
+      attempts: messages.attempts,
       sequenceId: campaigns.sequenceId,
       sendWindowStart: campaigns.sendWindowStart,
       sendWindowEnd: campaigns.sendWindowEnd,
@@ -109,11 +157,13 @@ async function tick(): Promise<void> {
         eq(campaigns.status, 'running'),
       ),
     )
+    .orderBy(asc(messages.scheduledAt))
     .limit(BATCH_SIZE)
 
   if (due.length === 0) return
 
-  // Load today's sent counts per connection
+  // Load today's sent counts per connection (server-day approximation — a
+  // connection can be shared across campaigns in different timezones).
   const sentTodayRows = await db
     .select({
       connectionId: messages.connectionId,
@@ -129,7 +179,8 @@ async function tick(): Promise<void> {
   }
 
   const connCache = new Map<number, ConnRow[]>()
-  let lastUsedConnectionId: number | null = null
+  const touchedCampaignIds = new Set<number>()
+  let sentAnyThisTick = false
 
   for (const msg of due) {
     // campaignId is guaranteed non-null by the innerJoin above, but the column
@@ -137,10 +188,13 @@ async function tick(): Promise<void> {
     // to narrow the TypeScript type for the rest of the loop.
     if (msg.campaignId == null) continue
 
+    touchedCampaignIds.add(msg.campaignId)
+    const iterNow = new Date()
+
     // Skip if outside send window
     if (
       !isWithinSendWindow(
-        now,
+        iterNow,
         msg.timezone,
         msg.sendWindowStart,
         msg.sendWindowEnd,
@@ -150,7 +204,8 @@ async function tick(): Promise<void> {
       continue
     }
 
-    // Check campaign daily cap
+    // Check campaign daily cap using the campaign's own timezone boundary
+    const campaignTodayStart = startOfDayInTimezone(iterNow, msg.timezone)
     const [capRow] = await db
       .select({ count: sql<number>`count(*)` })
       .from(messages)
@@ -158,7 +213,7 @@ async function tick(): Promise<void> {
         and(
           eq(messages.campaignId, msg.campaignId),
           eq(messages.status, 'sent'),
-          gte(messages.sentAt, todayStart),
+          gte(messages.sentAt, campaignTodayStart),
         ),
       )
 
@@ -171,6 +226,7 @@ async function tick(): Promise<void> {
           id: connections.id,
           status: connections.status,
           dailyLimit: connections.dailyLimit,
+          consecutiveFailures: connections.consecutiveFailures,
           smtpHost: connections.smtpHost,
           smtpPort: connections.smtpPort,
           smtpSecure: connections.smtpSecure,
@@ -188,17 +244,22 @@ async function tick(): Promise<void> {
 
     const campaignConns = connCache.get(msg.campaignId)!
 
-    // Pick next connection via round-robin
-    const pickResult = pickNext(campaignConns, { sentTodayByConnection, lastUsedConnectionId })
+    // Pick next connection via round-robin (cursor persists across ticks)
+    const pickResult = pickNext(campaignConns, {
+      sentTodayByConnection,
+      lastUsedConnectionId: lastUsedConnectionByCampaign.get(msg.campaignId) ?? null,
+    })
     if (!pickResult) {
+      // All mailboxes are at capacity for today — defer to tomorrow rather
+      // than dropping the message permanently.
       await db
         .update(messages)
-        .set({ status: 'skipped' })
+        .set({ scheduledAt: new Date(iterNow.getTime() + 24 * 60 * 60 * 1000) })
         .where(eq(messages.id, msg.msgId))
       continue
     }
 
-    lastUsedConnectionId = pickResult.connectionId
+    lastUsedConnectionByCampaign.set(msg.campaignId, pickResult.connectionId)
     sentTodayByConnection[pickResult.connectionId] = pickResult.newSentCount
 
     const chosenConn = campaignConns.find((c) => c.id === pickResult.connectionId)!
@@ -213,8 +274,8 @@ async function tick(): Promise<void> {
       continue
     }
 
-    // Skip if lead already replied or bounced — stop sequence
-    if (lead.status === 'bounced' || lead.status === 'replied') {
+    // Skip if lead already replied, bounced, or unsubscribed — stop sequence
+    if (lead.status === 'bounced' || lead.status === 'replied' || lead.status === 'unsubscribed') {
       await db
         .update(messages)
         .set({ status: 'skipped' })
@@ -261,7 +322,7 @@ async function tick(): Promise<void> {
     }
 
     const renderedSubject = renderVariables(expandSpintax(step.subject), vars)
-    const renderedBody = renderVariables(expandSpintax(step.body), vars)
+    const renderedBody = appendUnsubscribeFooter(renderVariables(expandSpintax(step.body), vars))
 
     // Decrypt SMTP password
     let smtpPass: string
@@ -275,9 +336,43 @@ async function tick(): Promise<void> {
       continue
     }
 
-    // Generate a deterministic messageId before sending so it is always stored,
-    // regardless of whether the SMTP server echoes it back.
-    const outboundMessageId = `<${randomUUID()}@lightreach.local>`
+    // Atomically claim the row so an overlapping run (or a future multi-instance
+    // deployment) can never send the same queued message twice.
+    const claimed = await db
+      .update(messages)
+      .set({ status: 'sending' })
+      .where(and(eq(messages.id, msg.msgId), eq(messages.status, 'queued')))
+      .returning({ id: messages.id })
+    if (claimed.length === 0) continue
+
+    // Jitter between sends (skip on the very first send of the tick so a
+    // single due message isn't needlessly delayed).
+    if (sentAnyThisTick) {
+      await sleep(randomDelayMs(msg.minDelaySeconds, msg.maxDelaySeconds))
+    }
+    sentAnyThisTick = true
+
+    // The send window may have closed while we were sleeping/waiting.
+    const preSendNow = new Date()
+    if (
+      !isWithinSendWindow(
+        preSendNow,
+        msg.timezone,
+        msg.sendWindowStart,
+        msg.sendWindowEnd,
+        msg.daysOfWeek ?? [1, 2, 3, 4, 5],
+      )
+    ) {
+      await db
+        .update(messages)
+        .set({ status: 'queued' })
+        .where(eq(messages.id, msg.msgId))
+      continue
+    }
+
+    // Message-ID rooted at the sender's own domain — a non-routable placeholder
+    // domain is a well-known spam signal.
+    const outboundMessageId = buildMessageId(chosenConn.fromEmail, randomUUID())
 
     // Send email
     try {
@@ -311,6 +406,40 @@ async function tick(): Promise<void> {
         })
         .where(eq(messages.id, msg.msgId))
 
+      if (chosenConn.consecutiveFailures > 0) {
+        await db
+          .update(connections)
+          .set({ consecutiveFailures: 0 })
+          .where(eq(connections.id, pickResult.connectionId))
+      }
+
+      if (lead.status === 'new') {
+        await db.update(leads).set({ status: 'contacted' }).where(eq(leads.id, lead.id))
+      }
+
+      // Enqueue the next sequence step, if any, offset by its configured delay
+      // (plus a little jitter so same-day follow-ups don't all land at once).
+      const [nextStep] = await db
+        .select({ position: sequenceSteps.position, delayDays: sequenceSteps.delayDays })
+        .from(sequenceSteps)
+        .where(
+          and(
+            eq(sequenceSteps.sequenceId, msg.sequenceId),
+            eq(sequenceSteps.position, msg.stepPosition + 1),
+          ),
+        )
+
+      if (nextStep) {
+        const jitterMs = randomDelayMs(0, msg.maxDelaySeconds)
+        await db.insert(messages).values({
+          campaignId: msg.campaignId,
+          leadId: msg.leadId,
+          stepPosition: nextStep.position,
+          status: 'queued',
+          scheduledAt: new Date(Date.now() + nextStep.delayDays * 86_400_000 + jitterMs),
+        })
+      }
+
       console.log(
         `[Lightreach] Sent message ${msg.msgId} to ${lead.email} via connection ${pickResult.connectionId}`,
       )
@@ -318,12 +447,11 @@ async function tick(): Promise<void> {
       const errMsg = err instanceof Error ? err.message : String(err)
       console.error(`[Lightreach] Failed to send message ${msg.msgId}:`, errMsg)
 
-      await db
-        .update(messages)
-        .set({ status: 'failed', error: errMsg })
-        .where(eq(messages.id, msg.msgId))
-
       if (isHardBounce(err)) {
+        await db
+          .update(messages)
+          .set({ status: 'failed', error: errMsg })
+          .where(eq(messages.id, msg.msgId))
         await db
           .update(leads)
           .set({ status: 'bounced' })
@@ -336,11 +464,64 @@ async function tick(): Promise<void> {
           `[Lightreach] Hard bounce for lead ${msg.leadId} (message ${msg.msgId}) — lead marked bounced, future messages skipped`,
         )
       } else {
-        await db
+        // Transient failure: retry with backoff instead of failing terminally.
+        const attempts = msg.attempts + 1
+        if (attempts < MAX_ATTEMPTS) {
+          await db
+            .update(messages)
+            .set({
+              status: 'queued',
+              attempts,
+              error: errMsg,
+              scheduledAt: new Date(Date.now() + RETRY_BACKOFF_BASE_MS * 2 ** (attempts - 1)),
+            })
+            .where(eq(messages.id, msg.msgId))
+        } else {
+          await db
+            .update(messages)
+            .set({ status: 'failed', attempts, error: errMsg })
+            .where(eq(messages.id, msg.msgId))
+        }
+
+        // A single transient error shouldn't take a mailbox out of rotation —
+        // only disable it after several failures in a row.
+        const [updatedConn] = await db
           .update(connections)
-          .set({ status: 'error', lastError: errMsg })
+          .set({
+            consecutiveFailures: sql`${connections.consecutiveFailures} + 1`,
+            lastError: errMsg,
+          })
           .where(eq(connections.id, pickResult.connectionId))
+          .returning({ consecutiveFailures: connections.consecutiveFailures })
+
+        if (updatedConn && updatedConn.consecutiveFailures >= CONNECTION_ERROR_THRESHOLD) {
+          await db
+            .update(connections)
+            .set({ status: 'error' })
+            .where(eq(connections.id, pickResult.connectionId))
+          // Evict from this tick's cache so it isn't picked again while still
+          // marked 'active' in the stale in-memory snapshot.
+          connCache.set(
+            msg.campaignId,
+            campaignConns.filter((c) => c.id !== pickResult.connectionId),
+          )
+        }
       }
+    }
+  }
+
+  // A running campaign with nothing left queued has finished sending.
+  for (const campaignId of touchedCampaignIds) {
+    const [remaining] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(messages)
+      .where(and(eq(messages.campaignId, campaignId), eq(messages.status, 'queued')))
+
+    if (remaining && remaining.count === 0) {
+      await db
+        .update(campaigns)
+        .set({ status: 'completed' })
+        .where(and(eq(campaigns.id, campaignId), eq(campaigns.status, 'running')))
     }
   }
 }

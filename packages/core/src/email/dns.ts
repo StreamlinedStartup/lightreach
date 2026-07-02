@@ -85,20 +85,31 @@ function joinRecords(records: string[][]): string[] {
 
 async function checkSpf(domain: string): Promise<boolean> {
   const records = joinRecords(await safeResolveTxt(domain));
-  return records.some((r) => r.toLowerCase().startsWith("v=spf1"));
+  const spfRecords = records.filter((r) => r.toLowerCase().startsWith("v=spf1"));
+  // RFC 7208: more than one SPF record for a domain is itself a permanent
+  // error that breaks SPF evaluation — that must NOT count as a pass.
+  return spfRecords.length === 1;
 }
 
 async function checkDmarc(domain: string): Promise<boolean> {
   const records = joinRecords(await safeResolveTxt(`_dmarc.${domain}`));
-  return records.some((r) => r.toLowerCase().startsWith("v=dmarc1"));
+  const dmarcRecords = records.filter((r) => r.toLowerCase().startsWith("v=dmarc1"));
+  // RFC 7489 §6.6.3: multiple DMARC TXT records at the same name means none are valid.
+  return dmarcRecords.length === 1;
 }
 
 /**
  * A DKIM TXT record is only a valid, active key when its `p=` tag carries an
  * actual base64 public key. Per RFC 6376 §3.6.1, an empty `p=` tag means the
- * key has been explicitly revoked — that must NOT count as a pass.
+ * key has been explicitly revoked — that must NOT count as a pass. Also
+ * require the record to actually declare itself as DKIM (`v=DKIM1`, or no `v=`
+ * tag at all — RFC 6376 §3.6.1 allows omitting it) so an unrelated TXT record
+ * that happens to contain "p=..." at that hostname doesn't false-positive.
  */
 function hasActiveDkimKey(record: string): boolean {
+  const versionMatch = /(?:^|;)\s*v=([^;]*)/i.exec(record);
+  if (versionMatch && versionMatch[1]!.trim().toUpperCase() !== "DKIM1") return false;
+
   const match = /(?:^|;)\s*p=([^;]*)/i.exec(record);
   if (!match) return false;
   return match[1]!.trim().length > 0;

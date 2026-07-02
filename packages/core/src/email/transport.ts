@@ -32,7 +32,7 @@ export interface SendPayload {
   to: string;
   subject: string;
   html: string;
-  /** Optional plain-text version */
+  /** Optional plain-text version. If omitted, one is derived from `html`. */
   text?: string;
   replyTo?: string;
   /** RFC822 Message-ID to use (with angle brackets, e.g. <uuid@host>). When provided
@@ -42,6 +42,47 @@ export interface SendPayload {
   inReplyTo?: string;
   /** RFC822 References header — space-separated message-ids for threading */
   references?: string;
+}
+
+// Fail fast rather than hang forever against a black-holed or slow-to-respond host.
+const CONNECTION_TIMEOUT_MS = 20_000;
+const GREETING_TIMEOUT_MS = 20_000;
+const SOCKET_TIMEOUT_MS = 30_000;
+
+/** Strip CR/LF and wrap in quotes so a malicious/malformed display name can't inject headers. */
+function sanitizeHeaderValue(value: string): string {
+  return value.replace(/[\r\n]/g, " ").replace(/"/g, "'").trim();
+}
+
+/** Very small HTML → text fallback so plain-text-only mail clients still get readable content. */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<(br|\/p|\/div|\/li)\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** Build a Message-ID rooted at the sending domain instead of a non-routable placeholder. */
+export function buildMessageId(fromEmail: string, uuid: string): string {
+  const domain = fromEmail.split("@")[1]?.trim() || "localhost";
+  return `<${uuid}@${domain}>`;
+}
+
+/**
+ * Append a plain-language opt-out line instead of a tracked unsubscribe link —
+ * cold outreach with a bare "unsubscribe" URL reads as bulk/marketing mail and
+ * hurts deliverability more than it helps. The inbox poller watches replies
+ * for this exact phrasing and marks the lead unsubscribed automatically.
+ */
+export function appendUnsubscribeFooter(html: string): string {
+  return `${html}<p style="color:#888888;font-size:12px;margin-top:24px;">If you'd rather not hear from us again, just reply with "STOP" and we'll take you off this list.</p>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -57,6 +98,12 @@ export function buildTransport(config: SMTPConfig): Transporter {
     host: config.smtpHost,
     port: config.smtpPort,
     secure: config.smtpSecure,
+    // When not using implicit TLS (port 465), require the server to upgrade via
+    // STARTTLS rather than silently falling back to a plaintext connection.
+    requireTLS: !config.smtpSecure,
+    connectionTimeout: CONNECTION_TIMEOUT_MS,
+    greetingTimeout: GREETING_TIMEOUT_MS,
+    socketTimeout: SOCKET_TIMEOUT_MS,
     auth: {
       user: config.smtpUser,
       pass: config.smtpPass,
@@ -97,11 +144,11 @@ export async function sendMail(
 
   try {
     const mailOptions: SendMailOptions = {
-      from: `"${payload.fromName}" <${payload.fromEmail}>`,
+      from: `"${sanitizeHeaderValue(payload.fromName)}" <${payload.fromEmail}>`,
       to: payload.to,
       subject: payload.subject,
       html: payload.html,
-      text: payload.text,
+      text: payload.text ?? htmlToText(payload.html),
       replyTo: payload.replyTo,
       messageId: payload.messageId,
       inReplyTo: payload.inReplyTo,

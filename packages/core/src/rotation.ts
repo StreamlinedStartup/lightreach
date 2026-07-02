@@ -99,8 +99,56 @@ export function isWithinSendWindow(
   const currentDay = weekdayMap[get("weekday")] ?? -1;
   if (!daysOfWeek.includes(currentDay)) return false;
 
-  const currentTime = `${String(parseInt(get("hour"), 10)).padStart(2, "0")}:${get("minute").padStart(2, "0")}`;
+  // Some ICU builds render midnight as hour "24" with hour12:false — normalize to 0.
+  const hour = parseInt(get("hour"), 10) % 24;
+  const currentTime = `${String(hour).padStart(2, "0")}:${get("minute").padStart(2, "0")}`;
+
+  // Overnight windows (e.g. 22:00 -> 06:00) wrap past midnight, so "within window"
+  // means outside the [end, start) gap rather than inside a simple [start, end) range.
+  if (windowStart > windowEnd) {
+    return currentTime >= windowStart || currentTime < windowEnd;
+  }
   return currentTime >= windowStart && currentTime < windowEnd;
+}
+
+/**
+ * Compute the start of "today" (00:00:00 local wall-clock time) for a given
+ * IANA timezone, expressed as a UTC Date. Used to compute timezone-correct
+ * daily send caps instead of resetting at server-local midnight.
+ *
+ * Note: this assumes a constant UTC offset across the day, so it can be off
+ * by up to an hour on the exact day of a DST transition — an acceptable
+ * approximation for a daily send-cap boundary.
+ */
+export function startOfDayInTimezone(now: Date, timezone: string): Date {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(now);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "0";
+
+  const year = Number(get("year"));
+  const month = Number(get("month"));
+  const day = Number(get("day"));
+  const hour = Number(get("hour")) % 24;
+  const minute = Number(get("minute"));
+  const second = Number(get("second"));
+
+  // Wall-clock time in `timezone`, reinterpreted as UTC — the gap between this
+  // and the real `now` instant is the timezone's current UTC offset.
+  const wallClockAsUtc = Date.UTC(year, month - 1, day, hour, minute, second);
+  const offsetMs = wallClockAsUtc - now.getTime();
+
+  const midnightWallClockAsUtc = Date.UTC(year, month - 1, day, 0, 0, 0);
+  return new Date(midnightWallClockAsUtc - offsetMs);
 }
 
 /**

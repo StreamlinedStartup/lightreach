@@ -49,7 +49,11 @@ export async function createCampaign(data: CreateCampaignInput): Promise<number>
 
 export async function launchCampaign(id: number) {
   const [campaign] = await db
-    .select({ listId: campaigns.listId })
+    .select({
+      listId: campaigns.listId,
+      minDelaySeconds: campaigns.minDelaySeconds,
+      maxDelaySeconds: campaigns.maxDelaySeconds,
+    })
     .from(campaigns)
     .where(eq(campaigns.id, id))
 
@@ -70,13 +74,19 @@ export async function launchCampaign(id: number) {
     const newLeads = allLeads.filter((l) => !alreadyQueued.has(l.id))
 
     if (newLeads.length > 0) {
+      // Stagger initial sends by the campaign's own jitter window instead of
+      // making every lead due at once — the scheduler paces actual sends
+      // within a tick too, but spacing scheduledAt avoids a huge same-instant
+      // backlog if the app restarts mid-campaign.
+      const avgDelayMs = ((campaign.minDelaySeconds + campaign.maxDelaySeconds) / 2) * 1000
+      const now = Date.now()
       await db.insert(messages).values(
-        newLeads.map((l) => ({
+        newLeads.map((l, i) => ({
           campaignId: id,
           leadId: l.id,
           stepPosition: 1,
           status: 'queued' as const,
-          scheduledAt: new Date(),
+          scheduledAt: new Date(now + i * avgDelayMs),
         })),
       )
     }

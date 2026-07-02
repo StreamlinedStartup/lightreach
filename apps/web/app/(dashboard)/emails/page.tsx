@@ -113,7 +113,7 @@ export default async function EmailsPage() {
           eq(sequenceSteps.position, messages.stepPosition),
         ),
       )
-      .where(or(eq(messages.status, 'queued'), eq(messages.status, 'scheduled')))
+      .where(or(eq(messages.status, 'queued'), eq(messages.status, 'sending')))
       .orderBy(asc(messages.scheduledAt))
       .limit(500),
 

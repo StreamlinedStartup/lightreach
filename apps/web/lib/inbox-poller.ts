@@ -3,11 +3,12 @@ import { connections, inboundEmails, appSettings, messages, leads } from '@works
 import { decrypt } from '@workspace/core/crypto'
 import { resolveImapConfig, fetchRecent } from '@workspace/core/email/imap'
 import type { ParsedEmail } from '@workspace/core/email/imap'
-import { eq, and, max, inArray } from 'drizzle-orm'
+import { eq, and, max, inArray, sql } from 'drizzle-orm'
 
 const TICK_MS = 120_000
 
 let pollerHandle: ReturnType<typeof setInterval> | null = null
+let isPolling = false
 
 export function startInboxPoller(): void {
   if (pollerHandle) {
@@ -73,60 +74,190 @@ function isBounceEmail(email: ParsedEmail): boolean {
   return false
 }
 
-async function classifyAndActOnInbound(email: ParsedEmail): Promise<void> {
-  const isBounce = isBounceEmail(email)
+const OUT_OF_OFFICE_SUBJECT_RE =
+  /\b(out.of.office|automatic reply|auto.?reply|vacation (response|reply)|away from (the )?office)\b/i
 
-  // Collect all referenced message IDs from inReplyTo and references headers
+// Outbound mail asks recipients to reply "STOP" instead of clicking a link.
+// Matched against the first non-empty line only, so it triggers on a genuine
+// one-word/one-phrase opt-out reply but not on "stop" appearing mid-sentence
+// in an unrelated reply (or in the quoted history below a top-posted reply).
+const UNSUBSCRIBE_REPLY_RE = /^(please\s+)?(stop|unsubscribe(\s+me)?|remove\s+me|opt[\s-]?out)[.!]?$/i
+
+function isUnsubscribeReply(bodyText: string | null, subject: string): boolean {
+  const firstLine = (bodyText ?? '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l.length > 0)
+  if (firstLine && UNSUBSCRIBE_REPLY_RE.test(firstLine)) return true
+
+  const cleanSubject = subject.replace(/^re:\s*/i, '').trim()
+  return UNSUBSCRIBE_REPLY_RE.test(cleanSubject)
+}
+
+export type LeadMatch = { leadId: number; campaignId: number | null }
+
+/**
+ * Resolve a lead by walking RFC822 threading headers (In-Reply-To / References
+ * → messages.messageId). This is the most reliable signal — shared with the
+ * manual reply-thread UI so the two paths never disagree.
+ */
+export async function matchLeadByReferences(
+  inReplyTo: string | null,
+  references: string | null,
+): Promise<LeadMatch | null> {
   const refs = new Set<string>()
-  if (email.inReplyTo) {
-    const n = normalizeMessageId(email.inReplyTo)
+  if (inReplyTo) {
+    const n = normalizeMessageId(inReplyTo)
     if (n) refs.add(n)
   }
-  if (email.references) {
-    for (const r of email.references.split(/\s+/)) {
+  if (references) {
+    for (const r of references.split(/\s+/)) {
       const n = normalizeMessageId(r)
       if (n) refs.add(n)
     }
   }
 
-  if (refs.size === 0) return
+  if (refs.size === 0) return null
 
-  // Find sent messages matching any referenced ID
-  const refArray = [...refs]
   const matched = await db
-    .select({ leadId: messages.leadId })
+    .select({ leadId: messages.leadId, campaignId: messages.campaignId })
     .from(messages)
-    .where(inArray(messages.messageId, refArray))
+    .where(inArray(messages.messageId, [...refs]))
     .limit(1)
 
-  if (matched.length === 0) return
+  if (matched.length === 0) return null
+  return { leadId: matched[0]!.leadId, campaignId: matched[0]!.campaignId }
+}
 
-  const leadId = matched[0]!.leadId
+/**
+ * Fallback match by sender address against leads we've actually emailed —
+ * catches replies/bounces that stripped or never carried threading headers.
+ * Only matches leads with at least one 'sent' message, so it can't associate
+ * an unrelated inbound sender with a lead we've never contacted.
+ */
+export async function matchLeadByEmail(fromEmail: string): Promise<LeadMatch | null> {
+  const lowerEmail = fromEmail.toLowerCase().trim()
+  if (!lowerEmail) return null
 
-  // Don't downgrade an already-bounced lead to replied
-  const [currentLead] = await db
-    .select({ status: leads.status })
+  const matchingLeads = await db
+    .select({ id: leads.id })
     .from(leads)
-    .where(eq(leads.id, leadId))
+    .where(eq(sql`lower(${leads.email})`, lowerEmail))
 
-  if (!currentLead || currentLead.status === 'bounced') return
+  if (matchingLeads.length === 0) return null
+  const leadIds = matchingLeads.map((l) => l.id)
 
-  const newStatus = isBounce ? 'bounced' : 'replied'
+  const sentMsg = await db
+    .select({ leadId: messages.leadId, campaignId: messages.campaignId })
+    .from(messages)
+    .where(and(eq(messages.status, 'sent'), inArray(messages.leadId, leadIds)))
+    .limit(1)
 
-  await db.update(leads).set({ status: newStatus }).where(eq(leads.id, leadId))
+  if (sentMsg.length === 0) return null
+  return { leadId: sentMsg[0]!.leadId, campaignId: sentMsg[0]!.campaignId }
+}
 
-  // Stop all future queued messages for this lead
+async function markLeadStatus(
+  leadId: number,
+  status: 'replied' | 'bounced' | 'unsubscribed',
+  context: string,
+): Promise<void> {
+  const [currentLead] = await db.select({ status: leads.status }).from(leads).where(eq(leads.id, leadId))
+  // Terminal statuses (bounced/unsubscribed) never get overwritten by a later reply.
+  if (!currentLead || currentLead.status === 'bounced' || currentLead.status === 'unsubscribed') return
+
+  await db.update(leads).set({ status }).where(eq(leads.id, leadId))
   await db
     .update(messages)
     .set({ status: 'skipped' })
     .where(and(eq(messages.leadId, leadId), eq(messages.status, 'queued')))
 
-  console.log(
-    `[Lightreach] Inbox: lead ${leadId} marked as ${newStatus} (${isBounce ? 'bounce' : 'reply'} detected)`,
-  )
+  console.log(`[Lightreach] Inbox: lead ${leadId} marked as ${status} (${context})`)
+}
+
+/**
+ * DSN/bounce messages almost never carry In-Reply-To/References to the
+ * original outbound mail — they embed the original headers inline instead.
+ * Try, in order: threading headers (rare but possible), an embedded
+ * Message-ID recovered from the raw DSN body, then the DSN's declared
+ * failed-recipient address matched against a lead we've actually emailed.
+ */
+async function handleBounce(email: ParsedEmail): Promise<void> {
+  let match = await matchLeadByReferences(email.inReplyTo, email.references)
+
+  if (!match && email.embeddedMessageIds.length > 0) {
+    const found = await db
+      .select({ leadId: messages.leadId, campaignId: messages.campaignId })
+      .from(messages)
+      .where(inArray(messages.messageId, email.embeddedMessageIds))
+      .limit(1)
+    if (found.length > 0) match = { leadId: found[0]!.leadId, campaignId: found[0]!.campaignId }
+  }
+
+  if (!match) {
+    for (const addr of email.failedRecipients) {
+      match = await matchLeadByEmail(addr)
+      if (match) break
+    }
+  }
+
+  if (!match) {
+    console.log('[Lightreach] Inbox: bounce notification received but could not be matched to a lead')
+    return
+  }
+
+  await markLeadStatus(match.leadId, 'bounced', 'DSN bounce')
+}
+
+async function classifyAndActOnInbound(email: ParsedEmail): Promise<void> {
+  if (isBounceEmail(email)) {
+    await handleBounce(email)
+    return
+  }
+
+  // Auto-responders are informational only — don't halt the sequence over them.
+  if (OUT_OF_OFFICE_SUBJECT_RE.test(email.subject)) return
+
+  // Header-threading match, cross-checked against the matched lead's own
+  // address so a forwarded copy of our email replied to by a third party (or
+  // an auto-responder sent from a different address) doesn't count as a reply.
+  let match = await matchLeadByReferences(email.inReplyTo, email.references)
+  if (match) {
+    const [matchedLead] = await db.select({ email: leads.email }).from(leads).where(eq(leads.id, match.leadId))
+    if (!matchedLead || matchedLead.email.toLowerCase() !== email.fromEmail.toLowerCase()) {
+      match = null
+    }
+  }
+
+  // Fall back to a sender-email match for replies that stripped threading headers.
+  if (!match) {
+    match = await matchLeadByEmail(email.fromEmail)
+  }
+
+  if (!match) return
+
+  if (isUnsubscribeReply(email.bodyText, email.subject)) {
+    await markLeadStatus(match.leadId, 'unsubscribed', 'unsubscribe keyword in reply')
+    return
+  }
+
+  await markLeadStatus(match.leadId, 'replied', 'reply detected')
 }
 
 export async function pollAllInboxes(): Promise<void> {
+  // The previous run's IMAP round-trips can outlast this tick's 120s interval;
+  // without this guard, an overlapping run would refetch the same UID range
+  // and race the first run's writes.
+  if (isPolling) return
+  isPolling = true
+  try {
+    await runPoll()
+  } finally {
+    isPolling = false
+  }
+}
+
+async function runPoll(): Promise<void> {
   const allConnections = await db
     .select()
     .from(connections)
@@ -149,10 +280,27 @@ export async function pollAllInboxes(): Promise<void> {
 
       const sinceUid = uidRow?.maxUid ?? 0
 
-      const emails = await fetchRecent(imapConfig, { sinceUid, limit: 100 })
+      const { emails, uidValidity } = await fetchRecent(imapConfig, {
+        sinceUid,
+        limit: 100,
+        expectedUidValidity: conn.imapUidValidity,
+      })
+
+      if (uidValidity != null && uidValidity !== conn.imapUidValidity) {
+        if (conn.imapUidValidity != null) {
+          console.warn(
+            `[Lightreach] Inbox: UIDVALIDITY changed for connection ${conn.id} — resynced from scratch`,
+          )
+        }
+        await db
+          .update(connections)
+          .set({ imapUidValidity: uidValidity })
+          .where(eq(connections.id, conn.id))
+      }
 
       for (const email of emails) {
         const filtered = isFilteredMatch(email.subject, email.bodyText, keywords)
+        const bounce = isBounceEmail(email)
 
         const inserted = await db
           .insert(inboundEmails)
@@ -169,6 +317,7 @@ export async function pollAllInboxes(): Promise<void> {
             bodyText: email.bodyText,
             bodyHtml: email.bodyHtml,
             isFiltered: filtered,
+            isBounce: bounce,
             receivedAt: email.receivedAt,
           })
           .onConflictDoNothing()
