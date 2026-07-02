@@ -160,6 +160,35 @@ DATABASE_URL=file:./data.db
 
 ---
 
+## Deploy with Docker
+
+The repo root ships a multi-stage `Dockerfile` (Next.js `output: "standalone"`) and a
+`docker-compose.yml` for running Lightreach as an isolated, persistent instance on a VPS.
+
+```bash
+cp .env.docker.example .env
+# generate a key and paste it into .env as APP_ENCRYPTION_KEY
+openssl rand -hex 32
+
+docker compose build
+docker compose up -d
+```
+
+- `migrate` runs once (applies pending drizzle migrations), then `web` starts and serves
+  on port `3000`.
+- SQLite (`data.db` + WAL sidecars) persists in the `lightreach-data` named volume, mounted
+  at `/data` — `docker compose down` (without `-v`) keeps your data.
+- The container must run as a **single, long-lived Node process**: the in-process
+  scheduler and inbox poller (`instrumentation.ts`) tick on `setInterval` inside that
+  process, so do not scale `web` to multiple replicas or run it on a serverless platform.
+- No TLS is configured by default — `docker-compose.yml` exposes plain HTTP on `3000` for
+  you to front with your own reverse proxy. An optional `caddy` service (commented out in
+  `docker-compose.yml`, config in `Caddyfile`) gives automatic Let's Encrypt HTTPS if the
+  VPS doesn't already have a proxy — set your domain in `Caddyfile` and uncomment the
+  service + `caddy-data`/`caddy-config` volumes.
+- To pick up schema changes after a `git pull`, re-run `docker compose build && docker
+  compose up -d` — the `migrate` service re-runs automatically before `web` restarts.
+
 ## Data Model (overview)
 
 | Table | Purpose |

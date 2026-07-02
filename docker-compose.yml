@@ -1,0 +1,52 @@
+services:
+  # One-shot: applies pending drizzle migrations to the shared volume, then exits.
+  # Reuses the `build` stage, which still has drizzle-kit + full source.
+  migrate:
+    build:
+      context: .
+      target: build
+    command: pnpm db:migrate
+    environment:
+      DATABASE_URL: file:/data/data.db
+    volumes:
+      - lightreach-data:/data
+
+  web:
+    build:
+      context: .
+      target: runner
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: file:/data/data.db
+    volumes:
+      - lightreach-data:/data
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+  # --- optional: automatic HTTPS reverse proxy ---------------------------------
+  # Uncomment if this VPS has no reverse proxy of its own. Point a domain's DNS
+  # at the VPS, set it in Caddyfile, and Caddy will provision/renew Let's
+  # Encrypt certs automatically.
+  #
+  # caddy:
+  #   image: caddy:2-alpine
+  #   depends_on:
+  #     - web
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile
+  #     - caddy-data:/data
+  #     - caddy-config:/config
+  #   restart: unless-stopped
+
+volumes:
+  lightreach-data:
+  # caddy-data:
+  # caddy-config:

@@ -1,0 +1,20 @@
+**/node_modules
+**/.next
+.turbo
+.git
+
+# SQLite database (persisted via the compose volume instead)
+data.db
+data.db-shm
+data.db-wal
+apps/web/data.db
+apps/web/data.db-shm
+apps/web/data.db-wal
+
+# env files (passed in via compose env_file / environment)
+.env*
+!.env.docker.example
+
+# editor / OS cruft
+.DS_Store
+*.log

@@ -1,0 +1,7 @@
+# Optional reverse proxy config — only used if you enable the `caddy` service
+# in docker-compose.yml. Replace with your domain; Caddy handles Let's
+# Encrypt TLS issuance/renewal automatically.
+
+your-domain.example.com {
+	reverse_proxy web:3000
+}
