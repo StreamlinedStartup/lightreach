@@ -5,7 +5,7 @@ services:
     build:
       context: .
       target: build
-    command: pnpm db:migrate
+    command: sh -c "pnpm db:migrate && chown -R 1001:1001 /data"
     environment:
       DATABASE_URL: file:/data/data.db
     volumes:
