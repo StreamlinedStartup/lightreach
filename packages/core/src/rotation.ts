@@ -111,6 +111,100 @@ export function isWithinSendWindow(
   return currentTime >= windowStart && currentTime < windowEnd;
 }
 
+/** UTC-offset (in ms) of `timezone` at the given instant: wall-clock-as-UTC minus the instant. */
+function tzOffsetMs(instant: Date, timezone: string): number {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(instant);
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? "0");
+  const wallAsUtc = Date.UTC(
+    get("year"),
+    get("month") - 1,
+    get("day"),
+    get("hour") % 24,
+    get("minute"),
+    get("second"),
+  );
+  return wallAsUtc - instant.getTime();
+}
+
+/** Convert a wall-clock time (interpreted in `timezone`) to the corresponding UTC instant. */
+function zonedWallClockToUtc(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  timezone: string,
+): Date {
+  // Guess by treating the wall-clock as UTC, then correct by the tz offset
+  // observed at that guess. One correction pass is exact except within the
+  // ~1h ambiguous window of a DST transition — acceptable for scheduling.
+  const guess = new Date(Date.UTC(year, month - 1, day, hour, minute));
+  return new Date(guess.getTime() - tzOffsetMs(guess, timezone));
+}
+
+/**
+ * Return the earliest instant at or after `from` that falls inside the send
+ * window, honoring the campaign's timezone and allowed days of week. If `from`
+ * is already within the window, it is returned unchanged.
+ *
+ * Used at campaign launch/resume so messages activated outside working hours
+ * are stamped with the next real send slot (e.g. Monday 09:00) instead of a
+ * time the scheduler will only ever skip.
+ */
+export function nextSendWindowStart(
+  from: Date,
+  timezone: string,
+  windowStart: string,
+  windowEnd: string,
+  daysOfWeek: number[],
+): Date {
+  if (isWithinSendWindow(from, timezone, windowStart, windowEnd, daysOfWeek)) {
+    return from;
+  }
+  if (daysOfWeek.length === 0) return from;
+
+  const [startHour = 0, startMinute = 0] = windowStart.split(":").map(Number);
+
+  // The window opens at `windowStart` on each allowed day. Walk forward from
+  // `from`'s calendar date in `timezone` and return the first opening >= from.
+  const nowParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(from);
+  const g = (type: string) => Number(nowParts.find((p) => p.type === type)?.value ?? "0");
+
+  // Pure UTC date cursor used only for calendar arithmetic (day + weekday).
+  const cursor = new Date(Date.UTC(g("year"), g("month") - 1, g("day")));
+  for (let i = 0; i < 8; i++) {
+    if (daysOfWeek.includes(cursor.getUTCDay())) {
+      const opening = zonedWallClockToUtc(
+        cursor.getUTCFullYear(),
+        cursor.getUTCMonth() + 1,
+        cursor.getUTCDate(),
+        startHour,
+        startMinute,
+        timezone,
+      );
+      if (opening.getTime() >= from.getTime()) return opening;
+    }
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  return from;
+}
+
 /**
  * Compute the start of "today" (00:00:00 local wall-clock time) for a given
  * IANA timezone, expressed as a UTC Date. Used to compute timezone-correct

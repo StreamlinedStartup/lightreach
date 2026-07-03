@@ -2,6 +2,7 @@
 
 import { db, campaigns, campaignConnections, messages, leads } from '@workspace/db'
 import { eq, and, lte, isNotNull, asc } from 'drizzle-orm'
+import { nextSendWindowStart } from '@workspace/core/rotation'
 import { revalidatePath } from 'next/cache'
 
 export type CreateCampaignInput = {
@@ -53,6 +54,10 @@ export async function launchCampaign(id: number) {
       listId: campaigns.listId,
       minDelaySeconds: campaigns.minDelaySeconds,
       maxDelaySeconds: campaigns.maxDelaySeconds,
+      sendWindowStart: campaigns.sendWindowStart,
+      sendWindowEnd: campaigns.sendWindowEnd,
+      timezone: campaigns.timezone,
+      daysOfWeek: campaigns.daysOfWeek,
     })
     .from(campaigns)
     .where(eq(campaigns.id, id))
@@ -79,14 +84,23 @@ export async function launchCampaign(id: number) {
       // within a tick too, but spacing scheduledAt avoids a huge same-instant
       // backlog if the app restarts mid-campaign.
       const avgDelayMs = ((campaign.minDelaySeconds + campaign.maxDelaySeconds) / 2) * 1000
-      const now = Date.now()
+      // Anchor the first send to the next open send-window slot so a campaign
+      // activated outside working hours (e.g. Friday 5pm) queues for the next
+      // valid time (Monday 09:00) rather than a time the scheduler only skips.
+      const base = nextSendWindowStart(
+        new Date(),
+        campaign.timezone,
+        campaign.sendWindowStart,
+        campaign.sendWindowEnd,
+        campaign.daysOfWeek,
+      ).getTime()
       await db.insert(messages).values(
         newLeads.map((l, i) => ({
           campaignId: id,
           leadId: l.id,
           stepPosition: 1,
           status: 'queued' as const,
-          scheduledAt: new Date(now + i * avgDelayMs),
+          scheduledAt: new Date(base + i * avgDelayMs),
         })),
       )
     }
@@ -106,6 +120,10 @@ export async function resumeCampaign(id: number) {
     .select({
       minDelaySeconds: campaigns.minDelaySeconds,
       maxDelaySeconds: campaigns.maxDelaySeconds,
+      sendWindowStart: campaigns.sendWindowStart,
+      sendWindowEnd: campaigns.sendWindowEnd,
+      timezone: campaigns.timezone,
+      daysOfWeek: campaigns.daysOfWeek,
     })
     .from(campaigns)
     .where(eq(campaigns.id, id))
@@ -134,10 +152,19 @@ export async function resumeCampaign(id: number) {
 
   if (pastDue.length > 0) {
     const avgDelayMs = ((campaign.minDelaySeconds + campaign.maxDelaySeconds) / 2) * 1000
+    // Re-anchor to the next open send-window slot so resuming outside working
+    // hours doesn't stamp past-due messages with a time the scheduler skips.
+    const base = nextSendWindowStart(
+      new Date(now),
+      campaign.timezone,
+      campaign.sendWindowStart,
+      campaign.sendWindowEnd,
+      campaign.daysOfWeek,
+    ).getTime()
     for (let i = 0; i < pastDue.length; i++) {
       await db
         .update(messages)
-        .set({ scheduledAt: new Date(now + i * avgDelayMs) })
+        .set({ scheduledAt: new Date(base + i * avgDelayMs) })
         .where(eq(messages.id, pastDue[i]!.id))
     }
   }
