@@ -8,6 +8,7 @@ type StepInput = {
   subject: string
   body: string
   delayDays: number
+  sameThread?: boolean
 }
 
 export async function createSequence(data: { name: string; steps: StepInput[] }) {
@@ -26,6 +27,8 @@ export async function createSequence(data: { name: string; steps: StepInput[] })
         subject: s.subject,
         body: s.body,
         delayDays: s.delayDays,
+        // Only follow-ups can join the prior thread; step 1 always starts one.
+        sameThread: i > 0 ? (s.sameThread ?? false) : false,
       }))
     )
   }
@@ -53,6 +56,8 @@ export async function updateSequence(
         subject: s.subject,
         body: s.body,
         delayDays: s.delayDays,
+        // Only follow-ups can join the prior thread; step 1 always starts one.
+        sameThread: i > 0 ? (s.sameThread ?? false) : false,
       }))
     )
   }

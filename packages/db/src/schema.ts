@@ -118,6 +118,10 @@ export const sequenceSteps = sqliteTable("sequence_steps", {
   body: text("body").notNull().default(""),
   /** Days to wait after the previous step (0 = send immediately / same day for step 1) */
   delayDays: integer("delay_days").notNull().default(0),
+  /** When true, this follow-up is sent as a reply within the previous step's
+   *  email thread (In-Reply-To/References set, subject reused as "Re: …").
+   *  Ignored for the first step (position 1) which starts the thread. */
+  sameThread: integer("same_thread", { mode: "boolean" }).notNull().default(false),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(unixepoch())`),

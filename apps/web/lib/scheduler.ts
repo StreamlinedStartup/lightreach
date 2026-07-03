@@ -12,7 +12,7 @@ import { sendMail, buildMessageId, appendUnsubscribeFooter } from '@workspace/co
 import { pickNext, isWithinSendWindow, randomDelayMs, startOfDayInTimezone } from '@workspace/core/rotation'
 import { expandSpintax } from '@workspace/core/spintax'
 import { renderVariables } from '@workspace/core/variables'
-import { eq, and, lte, gte, isNotNull, asc, sql } from 'drizzle-orm'
+import { eq, and, lt, lte, gte, isNotNull, asc, desc, sql } from 'drizzle-orm'
 import { randomUUID } from 'crypto'
 
 const TICK_MS = 60_000
@@ -321,7 +321,45 @@ async function runTick(): Promise<void> {
       ...(lead.customFields ?? {}),
     }
 
-    const renderedSubject = renderVariables(expandSpintax(step.subject), vars)
+    // Threading: a follow-up flagged sameThread is delivered as a reply to the
+    // lead's most recent sent message in this campaign, so it lands inside the
+    // same inbox conversation instead of arriving as a brand-new email.
+    let threadInReplyTo: string | undefined
+    let threadReferences: string | undefined
+    let threadSubject: string | undefined
+    if (step.sameThread && msg.stepPosition > 1) {
+      const [parent] = await db
+        .select({
+          messageId: messages.messageId,
+          renderedSubject: messages.renderedSubject,
+        })
+        .from(messages)
+        .where(
+          and(
+            eq(messages.campaignId, msg.campaignId),
+            eq(messages.leadId, msg.leadId),
+            eq(messages.status, 'sent'),
+            isNotNull(messages.messageId),
+            lt(messages.stepPosition, msg.stepPosition),
+          ),
+        )
+        .orderBy(desc(messages.stepPosition))
+        .limit(1)
+
+      if (parent?.messageId) {
+        // Stored IDs are normalized without angle brackets — re-wrap for the header.
+        const parentId = `<${parent.messageId}>`
+        threadInReplyTo = parentId
+        threadReferences = parentId
+        const base = (parent.renderedSubject ?? '')
+          .replace(/^\s*(re:\s*)+/i, '')
+          .trim()
+        threadSubject = `Re: ${base}`
+      }
+    }
+
+    const renderedSubject =
+      threadSubject ?? renderVariables(expandSpintax(step.subject), vars)
     const renderedBody = appendUnsubscribeFooter(renderVariables(expandSpintax(step.body), vars))
 
     // Decrypt SMTP password
@@ -391,6 +429,8 @@ async function runTick(): Promise<void> {
           subject: renderedSubject,
           html: renderedBody,
           messageId: outboundMessageId,
+          inReplyTo: threadInReplyTo,
+          references: threadReferences,
         },
       )
 

@@ -23,6 +23,12 @@ const stepSchema = z.object({
     .int()
     .min(0)
     .describe('Days to wait after the previous step (0 = send immediately)'),
+  sameThread: z
+    .boolean()
+    .optional()
+    .describe(
+      'Follow-ups only: send as a reply within the previous step\'s thread (Re: original subject). Ignored for step 1.',
+    ),
 })
 
 export function registerSequencesTools(server: McpServer) {

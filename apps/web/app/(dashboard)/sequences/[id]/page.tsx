@@ -43,6 +43,7 @@ export default async function EditSequencePage({
         subject: s.subject,
         body: s.body,
         delayDays: s.delayDays,
+        sameThread: s.sameThread,
       }))}
     />
   )

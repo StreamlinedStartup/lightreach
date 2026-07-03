@@ -1,0 +1,1 @@
+ALTER TABLE `sequence_steps` ADD `same_thread` integer DEFAULT false NOT NULL;
