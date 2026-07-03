@@ -48,6 +48,3 @@ next-env.d.ts
 data.db
 data.db-shm
 data.db-wal
-
-# Drizzle migration metadata (keep drizzle/ folder, ignore journal)
-packages/db/drizzle/meta/_journal.json
