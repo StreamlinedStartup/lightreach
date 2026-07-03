@@ -1,7 +1,7 @@
 'use server'
 
 import { db, campaigns, campaignConnections, messages, leads } from '@workspace/db'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, lte, isNotNull, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 
 export type CreateCampaignInput = {
@@ -102,6 +102,46 @@ export async function pauseCampaign(id: number) {
 }
 
 export async function resumeCampaign(id: number) {
+  const [campaign] = await db
+    .select({
+      minDelaySeconds: campaigns.minDelaySeconds,
+      maxDelaySeconds: campaigns.maxDelaySeconds,
+    })
+    .from(campaigns)
+    .where(eq(campaigns.id, id))
+
+  if (!campaign) throw new Error('Campaign not found')
+
+  // While paused, queued messages keep their original scheduledAt. Any that came
+  // due during the pause are now past-due and would all fire in the next tick as
+  // a burst. Re-stagger just those from now using the campaign's jitter window,
+  // preserving their original order. Messages still scheduled in the future
+  // (e.g. later sequence steps with delayDays) are left untouched so we don't
+  // pull intentional delays earlier.
+  const now = Date.now()
+  const pastDue = await db
+    .select({ id: messages.id })
+    .from(messages)
+    .where(
+      and(
+        eq(messages.campaignId, id),
+        eq(messages.status, 'queued'),
+        isNotNull(messages.scheduledAt),
+        lte(messages.scheduledAt, new Date(now)),
+      ),
+    )
+    .orderBy(asc(messages.scheduledAt))
+
+  if (pastDue.length > 0) {
+    const avgDelayMs = ((campaign.minDelaySeconds + campaign.maxDelaySeconds) / 2) * 1000
+    for (let i = 0; i < pastDue.length; i++) {
+      await db
+        .update(messages)
+        .set({ scheduledAt: new Date(now + i * avgDelayMs) })
+        .where(eq(messages.id, pastDue[i]!.id))
+    }
+  }
+
   await db.update(campaigns).set({ status: 'running' }).where(eq(campaigns.id, id))
   revalidatePath('/campaigns')
 }
