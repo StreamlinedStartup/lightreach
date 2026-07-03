@@ -3,7 +3,7 @@ import { connections, inboundEmails, appSettings, messages, leads } from '@works
 import { decrypt } from '@workspace/core/crypto'
 import { resolveImapConfig, fetchRecent } from '@workspace/core/email/imap'
 import type { ParsedEmail } from '@workspace/core/email/imap'
-import { eq, and, max, inArray, sql } from 'drizzle-orm'
+import { eq, and, max, inArray, sql, isNotNull, desc } from 'drizzle-orm'
 
 const TICK_MS = 120_000
 
@@ -95,6 +95,54 @@ function isUnsubscribeReply(bodyText: string | null, subject: string): boolean {
 }
 
 export type LeadMatch = { leadId: number; campaignId: number | null }
+
+/** Strip any run of leading "Re:" prefixes and normalize for comparison. */
+export function normalizeSubject(subject: string | null): string {
+  return (subject ?? '')
+    .replace(/^\s*(re:\s*)+/i, '')
+    .trim()
+    .toLowerCase()
+}
+
+/**
+ * Last-resort match by subject, scoped to the mailbox that received the reply.
+ *
+ * Delegated / forwarded / aliased replies routinely arrive from an address
+ * that differs from the lead we emailed *and* drop the In-Reply-To/References
+ * headers, so neither {@link matchLeadByReferences} nor {@link matchLeadByEmail}
+ * can connect them. The one signal that survives is the (normalized) subject.
+ *
+ * Scoped to `connectionId` so a subject reused across mailboxes can't cross-link
+ * unrelated conversations; picks the most recently sent match. This is a display
+ * heuristic only — when the same subject was sent to several leads on one mailbox
+ * it may attribute to the wrong lead, so callers must not use it to drive
+ * state changes (e.g. marking a lead 'replied').
+ */
+export async function matchLeadBySubject(
+  subject: string | null,
+  connectionId: number | null,
+): Promise<LeadMatch | null> {
+  const normalized = normalizeSubject(subject)
+  if (!normalized) return null
+
+  const conds = [eq(messages.status, 'sent'), isNotNull(messages.renderedSubject)]
+  if (connectionId != null) conds.push(eq(messages.connectionId, connectionId))
+
+  const candidates = await db
+    .select({
+      leadId: messages.leadId,
+      campaignId: messages.campaignId,
+      renderedSubject: messages.renderedSubject,
+    })
+    .from(messages)
+    .where(and(...conds))
+    .orderBy(desc(messages.sentAt))
+    .limit(500)
+
+  const hit = candidates.find((c) => normalizeSubject(c.renderedSubject) === normalized)
+  if (!hit) return null
+  return { leadId: hit.leadId, campaignId: hit.campaignId }
+}
 
 /**
  * Resolve a lead by walking RFC822 threading headers (In-Reply-To / References

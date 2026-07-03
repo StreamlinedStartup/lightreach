@@ -9,6 +9,7 @@ import {
   normalizeMessageId,
   matchLeadByReferences,
   matchLeadByEmail,
+  matchLeadBySubject,
 } from '@/lib/inbox-poller'
 import { randomUUID } from 'crypto'
 
@@ -61,19 +62,36 @@ export async function saveFilteredKeywords(keywords: string) {
 
 /**
  * Given an inbound email, attempt to locate the originating outbound campaign
- * message by walking RFC822 threading headers (In-Reply-To / References →
- * messages.messageId). Falls back to a case-insensitive email address lookup
- * against the leads table.
+ * message. Tries, in order of reliability:
+ *   1. RFC822 threading headers (In-Reply-To / References → messages.messageId)
+ *   2. a case-insensitive sender-address lookup against leads we've emailed
+ *   3. the reply's subject, scoped to the mailbox it arrived on
+ *
+ * (3) exists for delegated / forwarded / aliased replies: they arrive from an
+ * address that differs from the lead we emailed and often drop the threading
+ * headers, so (1) and (2) both miss. Pass `subject`/`connectionId` to enable it.
  *
  * Returns { leadId, campaignId } if resolved, otherwise null.
  */
 async function resolveThreadLead(
-  inbound: { inReplyTo: string | null; references: string | null; fromEmail: string },
+  inbound: {
+    inReplyTo: string | null
+    references: string | null
+    fromEmail: string
+    subject?: string | null
+    connectionId?: number | null
+  },
 ): Promise<{ leadId: number; campaignId: number | null } | null> {
   const byReferences = await matchLeadByReferences(inbound.inReplyTo, inbound.references)
   if (byReferences) return byReferences
 
-  return matchLeadByEmail(inbound.fromEmail)
+  const byEmail = await matchLeadByEmail(inbound.fromEmail)
+  if (byEmail) return byEmail
+
+  if (inbound.subject !== undefined) {
+    return matchLeadBySubject(inbound.subject, inbound.connectionId ?? null)
+  }
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +205,8 @@ export async function replyToEmail(
       inReplyTo: inbound.inReplyTo,
       references: inbound.references,
       fromEmail: inbound.fromEmail,
+      subject: inbound.subject,
+      connectionId: inbound.connectionId,
     })
     const leadId = thread?.leadId ?? await findOrCreateLeadFromInbound({
       fromEmail: inbound.fromEmail,
@@ -248,6 +268,8 @@ export async function getOutboundMessages(inboundId: number): Promise<OutboundMe
       inReplyTo: inboundEmails.inReplyTo,
       references: inboundEmails.references,
       fromEmail: inboundEmails.fromEmail,
+      subject: inboundEmails.subject,
+      connectionId: inboundEmails.connectionId,
     })
     .from(inboundEmails)
     .where(eq(inboundEmails.id, inboundId))

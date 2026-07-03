@@ -57,6 +57,7 @@ import {
   IconSelector,
 } from '@tabler/icons-react'
 import { toast } from 'sonner'
+import { splitQuotedReply } from '@workspace/core/email/quote'
 import type { InboundRow } from './page'
 import { markRead, markUnread, replyToEmail, saveFilteredKeywords, triggerFetch, categorizeEmail, getOutboundMessages } from './actions'
 import type { OutboundMessage } from './actions'
@@ -294,6 +295,71 @@ function EmptyState({ label }: { label: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// Inbound message body — separates the new reply from the quoted history and
+// tucks the quote behind a toggle (empty quotes are dropped entirely).
+// ---------------------------------------------------------------------------
+
+function InboundBody({
+  bodyText,
+  bodyHtml,
+}: {
+  bodyText: string | null
+  bodyHtml: string | null
+}) {
+  const [showQuote, setShowQuote] = useState(false)
+  const { reply, quoted, isHtml } = useMemo(
+    () => splitQuotedReply(bodyText, bodyHtml),
+    [bodyText, bodyHtml],
+  )
+  const hasReply = reply.trim().length > 0
+
+  return (
+    <>
+      {isHtml ? (
+        hasReply ? (
+          <div
+            className="prose prose-sm dark:prose-invert max-w-none text-sm"
+            dangerouslySetInnerHTML={{ __html: reply }}
+          />
+        ) : (
+          <p className="text-muted-foreground text-sm italic">(no message text)</p>
+        )
+      ) : (
+        <pre className="text-foreground whitespace-pre-wrap font-sans text-sm leading-relaxed">
+          {hasReply ? reply : '(empty)'}
+        </pre>
+      )}
+
+      {quoted && (
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => setShowQuote((v) => !v)}
+            className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
+          >
+            <IconChevronDown
+              className={`size-3 transition-transform ${showQuote ? 'rotate-180' : ''}`}
+            />
+            {showQuote ? 'Hide quoted text' : 'Show quoted text'}
+          </button>
+          {showQuote &&
+            (isHtml ? (
+              <div
+                className="border-muted-foreground/20 mt-2 border-l-2 pl-3 opacity-70 prose prose-sm dark:prose-invert max-w-none text-sm"
+                dangerouslySetInnerHTML={{ __html: quoted }}
+              />
+            ) : (
+              <pre className="border-muted-foreground/20 text-muted-foreground mt-2 whitespace-pre-wrap border-l-2 pl-3 font-sans text-xs leading-relaxed">
+                {quoted}
+              </pre>
+            ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Email detail + reply sheet — Telegram-style chat view
 // ---------------------------------------------------------------------------
 
@@ -347,7 +413,7 @@ function EmailSheet({
 
   return (
     <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
-      <SheetContent className="flex w-full max-w-2xl flex-col gap-0 p-0 sm:max-w-2xl">
+      <SheetContent className="flex w-full flex-col gap-0 p-0 data-[side=right]:w-[92vw] data-[side=right]:sm:max-w-3xl data-[side=right]:lg:max-w-5xl">
         <SheetHeader className="border-b px-6 py-4">
           <SheetTitle className="truncate text-base">{email.subject || '(no subject)'}</SheetTitle>
           <div className="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 text-xs">
@@ -426,16 +492,7 @@ function EmailSheet({
                         : 'border-border bg-card'
                     }`}
                   >
-                    {msg.bodyHtml ? (
-                      <div
-                        className="prose prose-sm dark:prose-invert max-w-none text-sm"
-                        dangerouslySetInnerHTML={{ __html: msg.bodyHtml }}
-                      />
-                    ) : (
-                      <pre className="text-foreground whitespace-pre-wrap font-sans text-sm leading-relaxed">
-                        {msg.bodyText ?? '(empty)'}
-                      </pre>
-                    )}
+                    <InboundBody bodyText={msg.bodyText} bodyHtml={msg.bodyHtml} />
                   </div>
                   <p className="mt-1 text-left text-xs text-muted-foreground pl-1">
                     {msg.fromName || msg.fromEmail} · {formatDate(msg.receivedAt)}
