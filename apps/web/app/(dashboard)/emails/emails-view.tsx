@@ -1,10 +1,17 @@
 'use client'
 
+import { useState } from 'react'
 import { Badge } from '@workspace/ui/components/badge'
 import {
   Card,
   CardContent,
 } from '@workspace/ui/components/card'
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from '@workspace/ui/components/sheet'
 import {
   Table,
   TableBody,
@@ -49,6 +56,19 @@ function formatDate(iso: string | null): string {
   })
 }
 
+function formatFullDate(iso: string | null): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return d.toLocaleString(undefined, {
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 function leadDisplay(row: EmailRow) {
   const name = [row.leadFirstName, row.leadLastName].filter(Boolean).join(' ')
   return { name: name || null, email: row.leadEmail }
@@ -82,10 +102,12 @@ function EmailTable({
   rows,
   dateLabel,
   dateKey,
+  onRowClick,
 }: {
   rows: EmailRow[]
   dateLabel: string
   dateKey: 'scheduledAt' | 'sentAt'
+  onRowClick: (row: EmailRow) => void
 }) {
   if (rows.length === 0) {
     return (
@@ -116,7 +138,11 @@ function EmailTable({
             {rows.map((row) => {
               const { name, email } = leadDisplay(row)
               return (
-                <TableRow key={row.id}>
+                <TableRow
+                  key={row.id}
+                  className="cursor-pointer"
+                  onClick={() => onRowClick(row)}
+                >
                   <TableCell>
                     {name && (
                       <p className="text-foreground text-sm font-medium leading-tight">{name}</p>
@@ -158,6 +184,88 @@ function EmailTable({
 }
 
 // ---------------------------------------------------------------------------
+// Email detail sheet
+// ---------------------------------------------------------------------------
+
+function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-1 text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="text-foreground min-w-0 break-words">{children}</span>
+    </div>
+  )
+}
+
+function EmailSheet({ email, onClose }: { email: EmailRow; onClose: () => void }) {
+  const { name, email: leadEmail } = leadDisplay(email)
+  const isSent = email.status === 'sent'
+
+  return (
+    <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
+      <SheetContent className="flex w-full flex-col gap-0 p-0 data-[side=right]:w-[92vw] data-[side=right]:sm:max-w-2xl data-[side=right]:lg:max-w-3xl">
+        <SheetHeader className="border-b px-6 py-4">
+          <SheetTitle className="pr-8 text-base leading-snug">
+            {email.subject || '(no subject)'}
+          </SheetTitle>
+          <div className="mt-1">
+            <Badge className={STATUS_COLORS[email.status] ?? ''}>
+              {email.status.charAt(0).toUpperCase() + email.status.slice(1)}
+            </Badge>
+          </div>
+        </SheetHeader>
+
+        <div className="min-h-0 flex-1 overflow-auto">
+          {/* Metadata */}
+          <div className="space-y-2 border-b px-6 py-4">
+            <DetailRow label="To">
+              {name ? (
+                <>
+                  <span className="font-medium">{name}</span>{' '}
+                  <span className="text-muted-foreground">&lt;{leadEmail}&gt;</span>
+                </>
+              ) : (
+                leadEmail || <span className="text-muted-foreground/40">—</span>
+              )}
+            </DetailRow>
+            <DetailRow label="From">
+              {email.fromEmail ? (
+                email.fromName ? `${email.fromName} <${email.fromEmail}>` : email.fromEmail
+              ) : (
+                <span className="text-muted-foreground/40">—</span>
+              )}
+            </DetailRow>
+            <DetailRow label="Campaign">
+              {email.campaignName ?? <span className="text-muted-foreground/40">—</span>}
+            </DetailRow>
+            <DetailRow label="Step">{email.stepPosition}</DetailRow>
+            <DetailRow label={isSent ? 'Sent at' : 'Scheduled at'}>
+              {formatFullDate(isSent ? email.sentAt : email.scheduledAt)}
+            </DetailRow>
+            {email.error && (
+              <DetailRow label="Error">
+                <span className="text-red-400">{email.error}</span>
+              </DetailRow>
+            )}
+          </div>
+
+          {/* Body */}
+          <div className="px-6 py-4">
+            {email.body ? (
+              <div
+                className="prose prose-sm dark:prose-invert max-w-none text-sm"
+                dangerouslySetInnerHTML={{ __html: email.body }}
+              />
+            ) : (
+              <p className="text-muted-foreground text-sm italic">(no body)</p>
+            )}
+          </div>
+        </div>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main view
 // ---------------------------------------------------------------------------
 
@@ -168,6 +276,8 @@ export function EmailsView({
   scheduled: EmailRow[]
   sent: EmailRow[]
 }) {
+  const [selectedEmail, setSelectedEmail] = useState<EmailRow | null>(null)
+
   return (
     <div className="space-y-6">
       <div>
@@ -200,13 +310,27 @@ export function EmailsView({
         </TabsList>
 
         <TabsContent value="scheduled" className="mt-4">
-          <EmailTable rows={scheduled} dateLabel="Scheduled At" dateKey="scheduledAt" />
+          <EmailTable
+            rows={scheduled}
+            dateLabel="Scheduled At"
+            dateKey="scheduledAt"
+            onRowClick={setSelectedEmail}
+          />
         </TabsContent>
 
         <TabsContent value="sent" className="mt-4">
-          <EmailTable rows={sent} dateLabel="Sent At" dateKey="sentAt" />
+          <EmailTable
+            rows={sent}
+            dateLabel="Sent At"
+            dateKey="sentAt"
+            onRowClick={setSelectedEmail}
+          />
         </TabsContent>
       </Tabs>
+
+      {selectedEmail && (
+        <EmailSheet email={selectedEmail} onClose={() => setSelectedEmail(null)} />
+      )}
     </div>
   )
 }

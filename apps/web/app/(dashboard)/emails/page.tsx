@@ -8,6 +8,7 @@ import {
   campaignConnections,
 } from '@workspace/db'
 import { eq, or, desc, asc, and } from 'drizzle-orm'
+import { renderVariables } from '@workspace/core/variables'
 import { EmailsView } from './emails-view'
 
 export type EmailRow = {
@@ -18,6 +19,8 @@ export type EmailRow = {
   sentAt: string | null
   /** renderedSubject for sent; templateSubject for queued/scheduled */
   subject: string | null
+  /** renderedBody for sent; templateBody for queued/scheduled */
+  body: string | null
   error: string | null
   campaignName: string | null
   leadEmail: string
@@ -35,15 +38,20 @@ const MESSAGE_FIELDS = {
   scheduledAt: messages.scheduledAt,
   sentAt: messages.sentAt,
   renderedSubject: messages.renderedSubject,
+  renderedBody: messages.renderedBody,
   connectionId: messages.connectionId,
   error: messages.error,
   campaignName: campaigns.name,
   leadEmail: leads.email,
   leadFirstName: leads.firstName,
   leadLastName: leads.lastName,
+  leadCompany: leads.company,
+  leadOpeningLine: leads.openingLine,
+  leadCustomFields: leads.customFields,
   fromEmail: connections.fromEmail,
   fromName: connections.fromName,
   templateSubject: sequenceSteps.subject,
+  templateBody: sequenceSteps.body,
 }
 
 function toRow(
@@ -55,20 +63,41 @@ function toRow(
     scheduledAt: Date | null
     sentAt: Date | null
     renderedSubject: string | null
+    renderedBody: string | null
     connectionId: number | null
     error: string | null
     campaignName: string | null
     leadEmail: string | null
     leadFirstName: string | null
     leadLastName: string | null
+    leadCompany: string | null
+    leadOpeningLine: string | null
+    leadCustomFields: Record<string, string> | null
     fromEmail: string | null
     fromName: string | null
     templateSubject: string | null
+    templateBody: string | null
   },
   campaignFromMap: Map<number, { fromEmail: string; fromName: string }>,
 ): EmailRow {
-  // Use rendered subject if available, fall back to raw template subject
-  const subject = r.renderedSubject ?? r.templateSubject ?? null
+  // For queued/scheduled emails the message body isn't rendered yet (that
+  // happens at send time). Resolve {{variable|fallback}} placeholders against
+  // the lead so the preview shows real values instead of raw template syntax.
+  // Spintax ({a|b}) is intentionally left unexpanded — the actual pick isn't
+  // decided until send.
+  const vars = {
+    firstName: r.leadFirstName,
+    lastName: r.leadLastName,
+    email: r.leadEmail,
+    company: r.leadCompany,
+    openingLine: r.leadOpeningLine,
+    ...(r.leadCustomFields ?? {}),
+  }
+
+  // Use rendered subject if available, else render the template's variables
+  const subject = r.renderedSubject ?? (r.templateSubject != null ? renderVariables(r.templateSubject, vars) : null)
+  // Same for body
+  const body = r.renderedBody ?? (r.templateBody != null ? renderVariables(r.templateBody, vars) : null)
 
   // Use the message's assigned connection; fall back to any connection on the campaign
   let fromEmail = r.fromEmail
@@ -86,6 +115,7 @@ function toRow(
     status: r.status,
     stepPosition: r.stepPosition,
     subject,
+    body,
     error: r.error,
     campaignName: r.campaignName,
     leadEmail: r.leadEmail ?? '',
