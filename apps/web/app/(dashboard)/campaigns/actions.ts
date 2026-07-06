@@ -1,8 +1,9 @@
 'use server'
 
-import { db, campaigns, campaignConnections, messages, leads } from '@workspace/db'
+import { db, campaigns, campaignConnections, messages } from '@workspace/db'
 import { eq, and, lte, isNotNull, asc } from 'drizzle-orm'
 import { nextSendWindowStart } from '@workspace/core/rotation'
+import { enqueueNewLeads } from '@/lib/enqueue-leads'
 import { revalidatePath } from 'next/cache'
 
 export type CreateCampaignInput = {
@@ -51,6 +52,7 @@ export async function createCampaign(data: CreateCampaignInput): Promise<number>
 export async function launchCampaign(id: number) {
   const [campaign] = await db
     .select({
+      id: campaigns.id,
       listId: campaigns.listId,
       minDelaySeconds: campaigns.minDelaySeconds,
       maxDelaySeconds: campaigns.maxDelaySeconds,
@@ -64,47 +66,7 @@ export async function launchCampaign(id: number) {
 
   if (!campaign) throw new Error('Campaign not found')
 
-  if (campaign.listId) {
-    const allLeads = await db
-      .select({ id: leads.id })
-      .from(leads)
-      .where(eq(leads.listId, campaign.listId))
-
-    const existing = await db
-      .select({ leadId: messages.leadId })
-      .from(messages)
-      .where(and(eq(messages.campaignId, id), eq(messages.stepPosition, 1)))
-
-    const alreadyQueued = new Set(existing.map((m) => m.leadId))
-    const newLeads = allLeads.filter((l) => !alreadyQueued.has(l.id))
-
-    if (newLeads.length > 0) {
-      // Stagger initial sends by the campaign's own jitter window instead of
-      // making every lead due at once — the scheduler paces actual sends
-      // within a tick too, but spacing scheduledAt avoids a huge same-instant
-      // backlog if the app restarts mid-campaign.
-      const avgDelayMs = ((campaign.minDelaySeconds + campaign.maxDelaySeconds) / 2) * 1000
-      // Anchor the first send to the next open send-window slot so a campaign
-      // activated outside working hours (e.g. Friday 5pm) queues for the next
-      // valid time (Monday 09:00) rather than a time the scheduler only skips.
-      const base = nextSendWindowStart(
-        new Date(),
-        campaign.timezone,
-        campaign.sendWindowStart,
-        campaign.sendWindowEnd,
-        campaign.daysOfWeek,
-      ).getTime()
-      await db.insert(messages).values(
-        newLeads.map((l, i) => ({
-          campaignId: id,
-          leadId: l.id,
-          stepPosition: 1,
-          status: 'queued' as const,
-          scheduledAt: new Date(base + i * avgDelayMs),
-        })),
-      )
-    }
-  }
+  await enqueueNewLeads(campaign)
 
   await db.update(campaigns).set({ status: 'running' }).where(eq(campaigns.id, id))
   revalidatePath('/campaigns')
