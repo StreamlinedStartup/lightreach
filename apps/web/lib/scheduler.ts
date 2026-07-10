@@ -6,9 +6,15 @@ import {
   connections,
   leads,
   sequenceSteps,
+  appSettings,
 } from '@workspace/db/schema'
 import { decrypt } from '@workspace/core/crypto'
-import { sendMail, buildMessageId, appendUnsubscribeFooter } from '@workspace/core/email/transport'
+import {
+  sendMail,
+  buildMessageId,
+  appendUnsubscribeFooter,
+  DEFAULT_UNSUBSCRIBE_TEXT,
+} from '@workspace/core/email/transport'
 import { pickNext, isWithinSendWindow, randomDelayMs, startOfDayInTimezone } from '@workspace/core/rotation'
 import { expandSpintax } from '@workspace/core/spintax'
 import { renderVariables } from '@workspace/core/variables'
@@ -218,6 +224,14 @@ async function runTick(): Promise<void> {
   const touchedCampaignIds = new Set<number>()
   let sentAnyThisTick = false
 
+  // Opt-out footer, loaded once per tick. Missing row → shipped default; a row
+  // saved as empty string → no footer appended (the user opted out of it).
+  const [footerRow] = await db
+    .select({ value: appSettings.value })
+    .from(appSettings)
+    .where(eq(appSettings.key, 'unsubscribe_footer'))
+  const unsubscribeFooter = footerRow?.value ?? DEFAULT_UNSUBSCRIBE_TEXT
+
   for (const msg of due) {
     // campaignId is guaranteed non-null by the innerJoin above, but the column
     // is nullable in the schema (manual replies have no campaign). Guard here
@@ -396,7 +410,10 @@ async function runTick(): Promise<void> {
 
     const renderedSubject =
       threadSubject ?? renderVariables(expandSpintax(step.subject), vars)
-    const renderedBody = appendUnsubscribeFooter(renderVariables(expandSpintax(step.body), vars))
+    const renderedBody = appendUnsubscribeFooter(
+      renderVariables(expandSpintax(step.body), vars),
+      unsubscribeFooter,
+    )
 
     // Decrypt SMTP password
     let smtpPass: string

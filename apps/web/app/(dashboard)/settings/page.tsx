@@ -18,11 +18,22 @@ import {
   IconPalette,
   IconCheck,
   IconX,
+  IconMailOff,
 } from "@tabler/icons-react"
+import { db, appSettings } from "@workspace/db"
+import { eq } from "drizzle-orm"
+import { DEFAULT_UNSUBSCRIBE_TEXT } from "@workspace/core/email/transport"
+import { UnsubscribeFooterForm } from "./unsubscribe-footer-form"
 
 const encKeySet = !!process.env["APP_ENCRYPTION_KEY"]
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
+  const [footerRow] = await db
+    .select({ value: appSettings.value })
+    .from(appSettings)
+    .where(eq(appSettings.key, "unsubscribe_footer"))
+  const unsubscribeFooter = footerRow?.value ?? DEFAULT_UNSUBSCRIBE_TEXT
+
   return (
     <div className="space-y-6">
       <div>
@@ -141,6 +152,28 @@ export default function SettingsPage() {
               Save defaults
             </Button>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Opt-out footer */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <IconMailOff className="size-4" />
+            Opt-out footer
+          </CardTitle>
+          <CardDescription>
+            Appended to the bottom of every outbound campaign email. Keep a clear
+            way to opt out (e.g. reply &quot;STOP&quot;) — the inbox poller marks
+            leads unsubscribed automatically when they reply with an opt-out
+            keyword. Leave empty to append nothing.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <UnsubscribeFooterForm
+            initialText={unsubscribeFooter}
+            defaultText={DEFAULT_UNSUBSCRIBE_TEXT}
+          />
         </CardContent>
       </Card>
 

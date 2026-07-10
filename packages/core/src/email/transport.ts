@@ -75,14 +75,35 @@ export function buildMessageId(fromEmail: string, uuid: string): string {
   return `<${uuid}@${domain}>`;
 }
 
+/** Shipped default opt-out line, used when the user hasn't customized one. */
+export const DEFAULT_UNSUBSCRIBE_TEXT =
+  `If you'd rather not hear from us again, just reply with "STOP" and we'll take you off this list.`;
+
+/** Escape text-node HTML specials so a custom footer can't break the surrounding markup. */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 /**
  * Append a plain-language opt-out line instead of a tracked unsubscribe link —
  * cold outreach with a bare "unsubscribe" URL reads as bulk/marketing mail and
- * hurts deliverability more than it helps. The inbox poller watches replies
- * for this exact phrasing and marks the lead unsubscribed automatically.
+ * hurts deliverability more than it helps. The inbox poller detects opt-out
+ * replies with its own keyword regex, so this text is free-form; it should still
+ * tell recipients how to opt out (e.g. reply "STOP").
+ *
+ * Pass a custom `text` to override the default. An empty/whitespace-only string
+ * appends no footer at all.
  */
-export function appendUnsubscribeFooter(html: string): string {
-  return `${html}<p style="color:#888888;font-size:12px;margin-top:24px;">If you'd rather not hear from us again, just reply with "STOP" and we'll take you off this list.</p>`;
+export function appendUnsubscribeFooter(
+  html: string,
+  text: string = DEFAULT_UNSUBSCRIBE_TEXT,
+): string {
+  const trimmed = text.trim();
+  if (!trimmed) return html;
+  return `${html}<p style="color:#888888;font-size:12px;margin-top:24px;">${escapeHtml(trimmed)}</p>`;
 }
 
 // ---------------------------------------------------------------------------
