@@ -32,7 +32,7 @@ export default async function SettingsPage() {
     .select({ value: appSettings.value })
     .from(appSettings)
     .where(eq(appSettings.key, "unsubscribe_footer"))
-  const unsubscribeFooter = footerRow?.value ?? DEFAULT_UNSUBSCRIBE_TEXT
+  const unsubscribeFooter = footerRow?.value || DEFAULT_UNSUBSCRIBE_TEXT
 
   return (
     <div className="space-y-6">
@@ -166,7 +166,8 @@ export default async function SettingsPage() {
             Appended to the bottom of every outbound campaign email. Keep a clear
             way to opt out (e.g. reply &quot;STOP&quot;) — the inbox poller marks
             leads unsubscribed automatically when they reply with an opt-out
-            keyword. Leave empty to append nothing.
+            keyword. This footer can&apos;t be removed; clearing it restores the
+            default.
           </CardDescription>
         </CardHeader>
         <CardContent>

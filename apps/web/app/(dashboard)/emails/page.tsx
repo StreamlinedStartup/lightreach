@@ -6,9 +6,14 @@ import {
   connections,
   sequenceSteps,
   campaignConnections,
+  appSettings,
 } from '@workspace/db'
 import { eq, or, desc, asc, and } from 'drizzle-orm'
 import { renderVariables } from '@workspace/core/variables'
+import {
+  appendUnsubscribeFooter,
+  DEFAULT_UNSUBSCRIBE_TEXT,
+} from '@workspace/core/email/transport'
 import { EmailsView } from './emails-view'
 
 export type EmailRow = {
@@ -79,6 +84,7 @@ function toRow(
     templateBody: string | null
   },
   campaignFromMap: Map<number, { fromEmail: string; fromName: string }>,
+  footerText: string,
 ): EmailRow {
   // For queued/scheduled emails the message body isn't rendered yet (that
   // happens at send time). Resolve {{variable|fallback}} placeholders against
@@ -97,7 +103,13 @@ function toRow(
   // Use rendered subject if available, else render the template's variables
   const subject = r.renderedSubject ?? (r.templateSubject != null ? renderVariables(r.templateSubject, vars) : null)
   // Same for body
-  const body = r.renderedBody ?? (r.templateBody != null ? renderVariables(r.templateBody, vars) : null)
+  let body = r.renderedBody ?? (r.templateBody != null ? renderVariables(r.templateBody, vars) : null)
+  // Sent bodies already have the opt-out footer baked in; queued/scheduled ones
+  // don't (rendering happens at send time), so append it here so the preview
+  // matches what will actually be delivered.
+  if (r.renderedBody == null && body != null) {
+    body = appendUnsubscribeFooter(body, footerText)
+  }
 
   // Use the message's assigned connection; fall back to any connection on the campaign
   let fromEmail = r.fromEmail
@@ -129,7 +141,7 @@ function toRow(
 }
 
 export default async function EmailsPage() {
-  const [scheduledRaw, sentRaw, campaignConnRows] = await Promise.all([
+  const [scheduledRaw, sentRaw, campaignConnRows, footerRows] = await Promise.all([
     db
       .select(MESSAGE_FIELDS)
       .from(messages)
@@ -173,7 +185,15 @@ export default async function EmailsPage() {
       })
       .from(campaignConnections)
       .leftJoin(connections, eq(campaignConnections.connectionId, connections.id)),
+
+    // Opt-out footer to mirror in the preview of not-yet-sent emails.
+    db
+      .select({ value: appSettings.value })
+      .from(appSettings)
+      .where(eq(appSettings.key, 'unsubscribe_footer')),
   ])
+
+  const unsubscribeFooter = footerRows[0]?.value || DEFAULT_UNSUBSCRIBE_TEXT
 
   // Build map: campaignId → first connection with a real fromEmail
   const campaignFromMap = new Map<number, { fromEmail: string; fromName: string }>()
@@ -188,8 +208,8 @@ export default async function EmailsPage() {
 
   return (
     <EmailsView
-      scheduled={scheduledRaw.map((r) => toRow(r, campaignFromMap))}
-      sent={sentRaw.map((r) => toRow(r, campaignFromMap))}
+      scheduled={scheduledRaw.map((r) => toRow(r, campaignFromMap, unsubscribeFooter))}
+      sent={sentRaw.map((r) => toRow(r, campaignFromMap, unsubscribeFooter))}
     />
   )
 }

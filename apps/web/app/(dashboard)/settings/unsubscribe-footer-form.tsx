@@ -18,14 +18,13 @@ export function UnsubscribeFooterForm({
   const [saving, startSaving] = useTransition()
 
   const dirty = value !== initialText
+  const isBlank = !value.trim()
 
   function handleSave() {
     startSaving(async () => {
       try {
         await saveUnsubscribeFooter(value)
-        toast.success(
-          value.trim() ? 'Opt-out footer saved' : 'Opt-out footer disabled',
-        )
+        toast.success('Opt-out footer saved')
       } catch {
         toast.error('Failed to save opt-out footer')
       }
@@ -36,7 +35,7 @@ export function UnsubscribeFooterForm({
     <div className="space-y-3">
       <Textarea
         className="min-h-24 resize-none text-sm"
-        placeholder="Leave empty to append no footer."
+        placeholder="This appears at the bottom of every campaign email."
         value={value}
         onChange={(e) => setValue(e.target.value)}
         disabled={saving}
@@ -50,11 +49,16 @@ export function UnsubscribeFooterForm({
         >
           Reset to default
         </button>
-        <Button size="sm" onClick={handleSave} disabled={saving || !dirty}>
+        <Button size="sm" onClick={handleSave} disabled={saving || !dirty || isBlank}>
           {saving && <IconLoader className="size-4 animate-spin" />}
           Save
         </Button>
       </div>
+      {isBlank && (
+        <p className="text-muted-foreground text-xs">
+          The footer can&apos;t be empty — leave it as is to keep the default.
+        </p>
+      )}
     </div>
   )
 }

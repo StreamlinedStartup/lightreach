@@ -224,13 +224,13 @@ async function runTick(): Promise<void> {
   const touchedCampaignIds = new Set<number>()
   let sentAnyThisTick = false
 
-  // Opt-out footer, loaded once per tick. Missing row → shipped default; a row
-  // saved as empty string → no footer appended (the user opted out of it).
+  // Opt-out footer, loaded once per tick. Missing or blank row → shipped
+  // default; the footer is always appended and can't be disabled.
   const [footerRow] = await db
     .select({ value: appSettings.value })
     .from(appSettings)
     .where(eq(appSettings.key, 'unsubscribe_footer'))
-  const unsubscribeFooter = footerRow?.value ?? DEFAULT_UNSUBSCRIBE_TEXT
+  const unsubscribeFooter = footerRow?.value || DEFAULT_UNSUBSCRIBE_TEXT
 
   for (const msg of due) {
     // campaignId is guaranteed non-null by the innerJoin above, but the column
