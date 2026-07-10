@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation'
-import { db, leads, sequences, sequenceSteps } from '@workspace/db'
+import { db, leads, sequences, sequenceSteps, appSettings } from '@workspace/db'
 import { eq, asc } from 'drizzle-orm'
+import { DEFAULT_UNSUBSCRIBE_TEXT } from '@workspace/core/email/transport'
 import { SequenceEditor } from '../new/sequence-editor'
 
 export default async function EditSequencePage({
@@ -34,10 +35,17 @@ export default async function EditSequencePage({
     .from(leads)
     .limit(100)
 
+  const [footerRow] = await db
+    .select({ value: appSettings.value })
+    .from(appSettings)
+    .where(eq(appSettings.key, 'unsubscribe_footer'))
+  const unsubscribeFooter = footerRow?.value || DEFAULT_UNSUBSCRIBE_TEXT
+
   return (
     <SequenceEditor
       leads={allLeads}
       editId={seqId}
+      unsubscribeFooter={unsubscribeFooter}
       initialName={seq.name}
       initialSteps={steps.map((s) => ({
         subject: s.subject,

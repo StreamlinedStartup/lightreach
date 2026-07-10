@@ -79,6 +79,9 @@ type SequenceEditorProps = {
   editId?: number
   initialName?: string
   initialSteps?: Step[]
+  /** Opt-out footer appended to every send, shown in the preview so it matches
+   *  the delivered email. Pre-resolved server-side (falls back to the default). */
+  unsubscribeFooter: string
 }
 
 export function SequenceEditor({
@@ -86,6 +89,7 @@ export function SequenceEditor({
   editId,
   initialName = '',
   initialSteps,
+  unsubscribeFooter,
 }: SequenceEditorProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -111,6 +115,11 @@ export function SequenceEditor({
   const threadedSubject = isFollowUp && currentStep.sameThread
   const vars = makeVars(previewLead)
   const renderedBody = renderVariables(expandSpintax(currentStep.body), vars)
+  // Mirror the opt-out footer the scheduler appends to every send. Shown as
+  // plain text here (the preview is a <pre>); the real email renders it as HTML.
+  const previewBody = renderedBody
+    ? `${renderedBody}\n\n${unsubscribeFooter}`
+    : ''
 
   // When this follow-up threads onto an earlier email, the recipient sees a
   // "Re:" of the thread's root subject, not this step's own subject field.
@@ -466,7 +475,7 @@ export function SequenceEditor({
                 </p>
                 <div className="bg-card rounded-md border p-4">
                   <pre className="font-sans text-sm leading-relaxed whitespace-pre-wrap">
-                    {renderedBody || (
+                    {previewBody || (
                       <span className="text-muted-foreground italic">
                         No body yet
                       </span>
