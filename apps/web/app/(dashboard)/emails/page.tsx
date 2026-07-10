@@ -6,14 +6,11 @@ import {
   connections,
   sequenceSteps,
   campaignConnections,
-  appSettings,
 } from '@workspace/db'
 import { eq, or, desc, asc, and } from 'drizzle-orm'
 import { renderVariables } from '@workspace/core/variables'
-import {
-  appendUnsubscribeFooter,
-  DEFAULT_UNSUBSCRIBE_TEXT,
-} from '@workspace/core/email/transport'
+import { appendUnsubscribeFooter } from '@workspace/core/email/transport'
+import { getUnsubscribeFooter } from '@/lib/unsubscribe-footer'
 import { EmailsView } from './emails-view'
 
 export type EmailRow = {
@@ -141,7 +138,7 @@ function toRow(
 }
 
 export default async function EmailsPage() {
-  const [scheduledRaw, sentRaw, campaignConnRows, footerRows] = await Promise.all([
+  const [scheduledRaw, sentRaw, campaignConnRows, unsubscribeFooter] = await Promise.all([
     db
       .select(MESSAGE_FIELDS)
       .from(messages)
@@ -187,13 +184,8 @@ export default async function EmailsPage() {
       .leftJoin(connections, eq(campaignConnections.connectionId, connections.id)),
 
     // Opt-out footer to mirror in the preview of not-yet-sent emails.
-    db
-      .select({ value: appSettings.value })
-      .from(appSettings)
-      .where(eq(appSettings.key, 'unsubscribe_footer')),
+    getUnsubscribeFooter(),
   ])
-
-  const unsubscribeFooter = footerRows[0]?.value || DEFAULT_UNSUBSCRIBE_TEXT
 
   // Build map: campaignId → first connection with a real fromEmail
   const campaignFromMap = new Map<number, { fromEmail: string; fromName: string }>()

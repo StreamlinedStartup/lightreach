@@ -20,19 +20,14 @@ import {
   IconX,
   IconMailOff,
 } from "@tabler/icons-react"
-import { db, appSettings } from "@workspace/db"
-import { eq } from "drizzle-orm"
 import { DEFAULT_UNSUBSCRIBE_TEXT } from "@workspace/core/email/transport"
+import { getUnsubscribeFooter } from "@/lib/unsubscribe-footer"
 import { UnsubscribeFooterForm } from "./unsubscribe-footer-form"
 
 const encKeySet = !!process.env["APP_ENCRYPTION_KEY"]
 
 export default async function SettingsPage() {
-  const [footerRow] = await db
-    .select({ value: appSettings.value })
-    .from(appSettings)
-    .where(eq(appSettings.key, "unsubscribe_footer"))
-  const unsubscribeFooter = footerRow?.value || DEFAULT_UNSUBSCRIBE_TEXT
+  const unsubscribeFooter = await getUnsubscribeFooter()
 
   return (
     <div className="space-y-6">
