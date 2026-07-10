@@ -94,15 +94,15 @@ function escapeHtml(value: string): string {
  * replies with its own keyword regex, so this text is free-form; it should still
  * tell recipients how to opt out (e.g. reply "STOP").
  *
- * Pass a custom `text` to override the default. An empty/whitespace-only string
- * appends no footer at all.
+ * Pass a custom `footerText` to override the default. The footer can't be
+ * removed: an empty/whitespace-only string falls back to the default so every
+ * outbound email always carries an opt-out line.
  */
 export function appendUnsubscribeFooter(
   html: string,
   footerText: string = DEFAULT_UNSUBSCRIBE_TEXT,
 ): string {
-  const trimmed = footerText.trim();
-  if (!trimmed) return html;
+  const trimmed = footerText.trim() || DEFAULT_UNSUBSCRIBE_TEXT;
   // Preserve author line breaks (a sign-off + postal address is common) — the
   // Textarea editor lets users write multi-line footers.
   const body = escapeHtml(trimmed).replace(/\r?\n/g, "<br />");

@@ -6,15 +6,14 @@ import {
   connections,
   leads,
   sequenceSteps,
-  appSettings,
 } from '@workspace/db/schema'
 import { decrypt } from '@workspace/core/crypto'
 import {
   sendMail,
   buildMessageId,
   appendUnsubscribeFooter,
-  DEFAULT_UNSUBSCRIBE_TEXT,
 } from '@workspace/core/email/transport'
+import { getUnsubscribeFooter } from '@/lib/unsubscribe-footer'
 import { pickNext, isWithinSendWindow, randomDelayMs, startOfDayInTimezone } from '@workspace/core/rotation'
 import { expandSpintax } from '@workspace/core/spintax'
 import { renderVariables } from '@workspace/core/variables'
@@ -224,13 +223,9 @@ async function runTick(): Promise<void> {
   const touchedCampaignIds = new Set<number>()
   let sentAnyThisTick = false
 
-  // Opt-out footer, loaded once per tick. Missing row → shipped default; a row
-  // saved as empty string → no footer appended (the user opted out of it).
-  const [footerRow] = await db
-    .select({ value: appSettings.value })
-    .from(appSettings)
-    .where(eq(appSettings.key, 'unsubscribe_footer'))
-  const unsubscribeFooter = footerRow?.value ?? DEFAULT_UNSUBSCRIBE_TEXT
+  // Opt-out footer, loaded once per tick. Always resolves to a non-blank value
+  // (missing/blank/whitespace → shipped default); the footer can't be disabled.
+  const unsubscribeFooter = await getUnsubscribeFooter()
 
   for (const msg of due) {
     // campaignId is guaranteed non-null by the innerJoin above, but the column

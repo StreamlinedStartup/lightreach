@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation'
 import { db, leads, sequences, sequenceSteps } from '@workspace/db'
 import { eq, asc } from 'drizzle-orm'
+import { getUnsubscribeFooter } from '@/lib/unsubscribe-footer'
 import { SequenceEditor } from '../new/sequence-editor'
 
 export default async function EditSequencePage({
@@ -34,10 +35,13 @@ export default async function EditSequencePage({
     .from(leads)
     .limit(100)
 
+  const unsubscribeFooter = await getUnsubscribeFooter()
+
   return (
     <SequenceEditor
       leads={allLeads}
       editId={seqId}
+      unsubscribeFooter={unsubscribeFooter}
       initialName={seq.name}
       initialSteps={steps.map((s) => ({
         subject: s.subject,
