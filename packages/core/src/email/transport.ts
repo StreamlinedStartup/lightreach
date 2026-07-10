@@ -99,11 +99,14 @@ function escapeHtml(value: string): string {
  */
 export function appendUnsubscribeFooter(
   html: string,
-  text: string = DEFAULT_UNSUBSCRIBE_TEXT,
+  footerText: string = DEFAULT_UNSUBSCRIBE_TEXT,
 ): string {
-  const trimmed = text.trim();
+  const trimmed = footerText.trim();
   if (!trimmed) return html;
-  return `${html}<p style="color:#888888;font-size:12px;margin-top:24px;">${escapeHtml(trimmed)}</p>`;
+  // Preserve author line breaks (a sign-off + postal address is common) — the
+  // Textarea editor lets users write multi-line footers.
+  const body = escapeHtml(trimmed).replace(/\r?\n/g, "<br />");
+  return `${html}<p style="color:#888888;font-size:12px;margin-top:24px;">${body}</p>`;
 }
 
 // ---------------------------------------------------------------------------

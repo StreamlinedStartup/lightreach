@@ -21,10 +21,14 @@ export function UnsubscribeFooterForm({
 
   function handleSave() {
     startSaving(async () => {
-      await saveUnsubscribeFooter(value)
-      toast.success(
-        value.trim() ? 'Opt-out footer saved' : 'Opt-out footer disabled',
-      )
+      try {
+        await saveUnsubscribeFooter(value)
+        toast.success(
+          value.trim() ? 'Opt-out footer saved' : 'Opt-out footer disabled',
+        )
+      } catch {
+        toast.error('Failed to save opt-out footer')
+      }
     })
   }
 
